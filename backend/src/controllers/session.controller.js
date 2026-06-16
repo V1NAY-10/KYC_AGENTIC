@@ -145,9 +145,32 @@ export const submitReview = async (req, res) => {
 
     console.log(`🏦 Loan decision finalized via review form: ${decision.decision} (score: ${decision.score})`);
 
+    // 3. Create Application Document for Loan Officer Portal
+    const Application = (await import('../models/Application.model.js')).default;
+    
+    // Find the loan amount and tenure if they exist
+    const loanAmountField = extractedFields.find(f => f.key === 'loan_amount');
+    const tenureField = extractedFields.find(f => f.key === 'loan_tenure');
+    const purposeField = extractedFields.find(f => f.key === 'loan_purpose');
+
+    const newApplication = new Application({
+      sessionId: session._id,
+      userId: session.userId,
+      loanType: session.loanType || 'personal',
+      status: 'under_review',
+      loanAmount: loanAmountField ? parseFloat(loanAmountField.finalValue || loanAmountField.aiExtractedValue) || null : null,
+      tenure: tenureField ? parseInt(tenureField.finalValue || tenureField.aiExtractedValue) || null : null,
+      purpose: purposeField ? purposeField.finalValue || purposeField.aiExtractedValue : null,
+    });
+    
+    await newApplication.save();
+    
+    console.log(`📄 Application created for review: ${newApplication.referenceNumber}`);
+
+    // Do NOT return loan decision to client, just success.
     res.json({ 
-      message: 'Application submitted successfully',
-      loanDecision: decision 
+      message: 'Application submitted successfully and is now under review',
+      applicationRef: newApplication.referenceNumber
     });
 
   } catch (error) {

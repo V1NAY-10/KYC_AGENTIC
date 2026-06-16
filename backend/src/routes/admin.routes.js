@@ -1,20 +1,22 @@
 import express from 'express';
-// import { requireAuth } from '@clerk/express';
+import { requireAuth } from '@clerk/express';
+import { isOfficer } from '../middleware/role.middleware.js';
+import { 
+  getApplications, 
+  getApplicationById, 
+  updateApplicationDecision 
+} from '../controllers/admin.controller.js';
 
 const router = express.Router();
 
-router.get('/applications', (req, res) => {
-  res.json({ message: 'List applications route' });
-});
+// Protect all admin routes
+router.use(requireAuth(), isOfficer);
 
-router.get('/applications/:id', (req, res) => {
-  res.json({ message: 'Get application details route' });
-});
+router.get('/applications', getApplications);
+router.get('/applications/:id', getApplicationById);
+router.put('/applications/:id/decision', updateApplicationDecision);
 
-router.put('/applications/:id/decision', (req, res) => {
-  res.json({ message: 'Officer decision route' });
-});
-
+// Future implementation
 router.get('/fraud/:sessionId', (req, res) => {
   res.json({ message: 'Get fraud report route' });
 });

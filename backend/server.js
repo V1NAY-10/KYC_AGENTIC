@@ -16,6 +16,7 @@ import kycRoutes from './src/routes/kyc.routes.js';
 import applicationRoutes from './src/routes/application.routes.js';
 import adminRoutes from './src/routes/admin.routes.js';
 import webhookRoutes from './src/routes/webhook.routes.js';
+import authRoutes from './src/routes/auth.routes.js';
 
 const app = express();
 const httpServer = createServer(app);
@@ -63,6 +64,7 @@ app.use('/api/sessions', sessionRoutes);
 app.use('/api/kyc', kycRoutes);
 app.use('/api/applications', applicationRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/auth', authRoutes);
 
 // ─── 404 + Error Handler ─────────────────────────────────────────────────────
 app.use((_req, res) => res.status(404).json({ error: 'Route not found' }));

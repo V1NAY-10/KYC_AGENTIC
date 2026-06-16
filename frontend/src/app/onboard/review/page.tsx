@@ -260,123 +260,27 @@ export default function ReviewPage() {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // PHASE: Decision result
+  // PHASE: Success result
   // ─────────────────────────────────────────────────────────────────────────
-  if (phase === 'decision' && loanDecision) {
-    const decision = loanDecision.decision || 'manual_review';
-    const config = DECISION_CONFIG[decision];
-    const score = loanDecision.score ?? 0;
-
+  if (phase === 'decision') {
     return (
-      <div className="max-w-3xl mx-auto px-4 py-10 animate-fade-in">
-        <div className="text-center mb-8">
-          <div className="text-6xl mb-3">{config.icon}</div>
-          <h1 className="text-3xl font-black text-white mb-1">Loan Decision</h1>
-          <span className={`inline-block px-4 py-1 rounded-full text-sm font-bold uppercase tracking-wider ${config.badge}`}>
-            {config.label}
-          </span>
-        </div>
-
-        {/* Score + Summary card */}
-        <div className={`rounded-2xl p-6 border bg-gradient-to-br ${config.bg} ${config.border} mb-6`}>
-          <div className="flex flex-col sm:flex-row gap-6 items-center">
-            {/* Score ring */}
-            <div className="flex flex-col items-center shrink-0">
-              <div className="relative w-24 h-24">
-                <svg viewBox="0 0 36 36" className="w-24 h-24 -rotate-90">
-                  <circle cx="18" cy="18" r="15.9" fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="2.5" />
-                  <circle
-                    cx="18" cy="18" r="15.9" fill="none"
-                    stroke={score >= 70 ? '#22c55e' : score >= 40 ? '#eab308' : '#ef4444'}
-                    strokeWidth="2.5"
-                    strokeDasharray={`${score} ${100 - score}`}
-                    strokeLinecap="round"
-                    className="transition-all duration-1000"
-                  />
-                </svg>
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <span className="text-2xl font-black text-white">{score}</span>
-                </div>
-              </div>
-              <span className="text-xs text-white/40 mt-1.5">Credit Score</span>
-            </div>
-
-            <div className="flex-1">
-              {loanDecision.llmAssessment?.summary && (
-                <p className="text-white/80 text-sm italic mb-4">"{loanDecision.llmAssessment.summary}"</p>
-              )}
-              {loanDecision.reasons?.length > 0 && (
-                <div>
-                  <p className="text-[10px] uppercase tracking-wider text-white/40 mb-1.5">Key Factors</p>
-                  <ul className="space-y-1">
-                    {loanDecision.reasons.slice(0, 4).map((r, i) => (
-                      <li key={i} className="flex items-start gap-2 text-xs text-white/70">
-                        <span className="shrink-0 text-white/30 mt-0.5">•</span>{r}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {loanDecision.conditions?.length > 0 && (
-            <div className="mt-4 pt-4 border-t border-white/10">
-              <p className="text-[10px] uppercase tracking-wider text-amber-400 mb-2">Conditions</p>
-              <ul className="space-y-1">
-                {loanDecision.conditions.map((c, i) => (
-                  <li key={i} className="flex items-start gap-2 text-xs text-amber-300/80">
-                    <span className="shrink-0">→</span>{c}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
-
-        {/* Strengths/Risks */}
-        {loanDecision.llmAssessment && (
-          <div className="grid grid-cols-2 gap-4 mb-8">
-            <div className="p-4 rounded-xl bg-green-500/5 border border-green-500/20">
-              <p className="text-[10px] uppercase tracking-wider text-green-400 mb-2 font-bold">✓ Strengths</p>
-              {loanDecision.llmAssessment.strengths?.length > 0
-                ? loanDecision.llmAssessment.strengths.map((s, i) => (
-                    <p key={i} className="text-xs text-white/60 mb-1">{s}</p>
-                  ))
-                : <p className="text-xs text-white/30">None identified</p>
-              }
-            </div>
-            <div className="p-4 rounded-xl bg-red-500/5 border border-red-500/20">
-              <p className="text-[10px] uppercase tracking-wider text-red-400 mb-2 font-bold">✗ Risks</p>
-              {loanDecision.llmAssessment.risks?.length > 0
-                ? loanDecision.llmAssessment.risks.map((r, i) => (
-                    <p key={i} className="text-xs text-white/60 mb-1">{r}</p>
-                  ))
-                : <p className="text-xs text-white/30">None identified</p>
-              }
-            </div>
-          </div>
-        )}
-
-        <div className="flex flex-col sm:flex-row gap-3 justify-center">
+      <div className="max-w-xl mx-auto px-4 py-20 animate-fade-in text-center">
+        <div className="text-7xl mb-6">✅</div>
+        <h1 className="text-3xl font-black text-white mb-4">Application Submitted!</h1>
+        <p className="text-white/60 mb-8">
+          Your loan application has been successfully submitted and is currently under review by our Loan Officers. We will contact you with an update shortly.
+        </p>
+        <div className="flex justify-center gap-4">
           <button
-            className="btn-primary bg-white/10 hover:bg-white/20 text-white text-sm border border-white/20"
+            className="btn-primary"
             onClick={() => {
               sessionStorage.removeItem('kycReviewData');
               reset();
               router.push('/');
             }}
           >
-            Back to Home
+            Return to Home
           </button>
-          {decision !== 'rejected' && (
-            <button
-              className="btn-primary text-sm"
-              onClick={() => alert('Application forwarded to Loan Officer. You will be contacted within 2 business days.')}
-            >
-              Forward to Loan Officer →
-            </button>
-          )}
         </div>
       </div>
     );

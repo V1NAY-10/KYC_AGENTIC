@@ -13,6 +13,22 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ stream, 
   const audioContextRef = useRef<AudioContext | null>(null);
 
   useEffect(() => {
+    const resumeCtx = () => {
+      if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
+        audioContextRef.current.resume().then(() => {
+          console.log('[WaveformVisualizer] AudioContext resumed via click');
+        });
+      }
+    };
+    window.addEventListener('click', resumeCtx);
+    window.addEventListener('touchstart', resumeCtx);
+    return () => {
+      window.removeEventListener('click', resumeCtx);
+      window.removeEventListener('touchstart', resumeCtx);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!stream || !isActive) {
       if (animationRef.current) cancelAnimationFrame(animationRef.current);
       if (canvasRef.current) {
@@ -37,6 +53,13 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ stream, 
       audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
     }
     const audioCtx = audioContextRef.current;
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume().then(() => {
+        console.log('[WaveformVisualizer] AudioContext resumed successfully');
+      }).catch(err => {
+        console.warn('[WaveformVisualizer] AudioContext resume failed:', err);
+      });
+    }
     
     // Only create a new source if we haven't already
     if (!analyserRef.current) {

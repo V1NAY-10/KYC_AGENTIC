@@ -1,7 +1,7 @@
 import Session from '../models/Session.model.js';
 import { processAnswer, getGreeting, AGENT_STATES, STATE_FIELD } from '../services/ai/callOrchestrator.js';
 import { extractKYCFromTranscript } from '../services/ai/extraction.service.js';
-import { evaluateLoan } from '../services/ai/loanEngine.service.js';
+import { transcribeAudio } from '../services/ai/stt.service.js';
 
 // Human-readable label for the current state shown to the frontend
 const STATE_LABEL = {
@@ -75,68 +75,54 @@ export const registerSocketHandlers = (io) => {
     socket.on('call:transcript', async ({ text, sessionId }) => {
       console.log(`🎙 Transcript received [${sessionId}]: "${text}"`);
       try {
-        const session = await Session.findById(sessionId);
-        if (!session) return;
-
-        const currentState = session.agentState;
-
-        // Ignore if call is already over
-        if (currentState === AGENT_STATES.CALL_COMPLETE) return;
-
-        // Save user turn
-        session.transcript.push({ role: 'user', text, state: currentState });
-
-        // Build collected answers map for context (guard against legacy sessions)
-        const rawMap = session.collectedAnswers;
-        const collectedAnswers = rawMap instanceof Map
-          ? Object.fromEntries(rawMap)
-          : (rawMap || {});
-
-        // ── Call the orchestrator LLM ─────────────────────────────────────────
-        const result = await processAnswer({
-          transcript: text,
-          currentState,
-          language: session.language,
-          collectedAnswers,
-        });
-
-        // Persist extracted field using the proper field name from STATE_FIELD map
-        if (result.extractedValue !== null && result.extractedValue !== undefined) {
-          const fieldKey = STATE_FIELD[currentState];
-          if (fieldKey) {
-            session.collectedAnswers.set(fieldKey, result.extractedValue);
-          }
-        }
-
-        // Persist agent reply
-        session.transcript.push({
-          role: 'agent',
-          text: result.nextQuestion || '',
-          state: result.nextState,
-        });
-        session.agentState = result.nextState;
-        await session.save();
-
-        // ── Emit agent response to frontend ──────────────────────────────────
-        socket.emit('call:agent-response', {
-          question:      result.nextQuestion,
-          state:         result.nextState,
-          stateLabel:    STATE_LABEL[result.nextState] || result.nextState,
-          extractedValue: result.extractedValue,
-          confidence:    result.confidence,
-          fraudSignals:  result.fraudSignals,
-          probeRequired: result.probeRequired,
-        });
-
-        // ── Call complete: extract KYC + run loan engine ──────────────────────
-        // Trigger on CALL_COMPLETE, or force-trigger if DOCUMENT_VERIFY was last
-        if (result.nextState === AGENT_STATES.CALL_COMPLETE) {
-          await handleCallComplete(session, io, sessionId);
-        }
-
+        await handleUserResponse({ text, sessionId, socket, io });
       } catch (error) {
         console.error('[call:transcript] Error:', error);
         socket.emit('call:error', { message: 'Failed to process your response. Please try again.' });
+      }
+    });
+
+    // ─── call:audio ───────────────────────────────────────────────────────────
+    // Triggered when the user finishes speaking and frontend sends the audio buffer
+    socket.on('call:audio', async ({ audio, sessionId }) => {
+      console.log(`🎙 Audio received [${sessionId}]: ${audio ? audio.length : 0} bytes`);
+      try {
+        const session = await Session.findById(sessionId);
+        if (!session) {
+          socket.emit('call:error', { message: 'Session not found.' });
+          return;
+        }
+
+        const text = await transcribeAudio(audio, session.language);
+        console.log(`🗣 Whisper transcribed [${sessionId}]: "${text}"`);
+
+        // Emit transcribed text immediately so the frontend knows what was heard
+        socket.emit('call:user-transcript', { text });
+
+        if (!text || text.trim() === '') {
+          // Trigger silence flow if nothing was transcribed
+          console.log(`[call:audio] Empty transcription, triggering silence reprompt`);
+          
+          const lastAgentMsg = session.transcript.findLast(t => t.role === 'agent');
+          if (!lastAgentMsg || session.agentState === AGENT_STATES.CALL_COMPLETE) return;
+
+          const silencePrefix = session.language === 'hi'
+            ? 'मुझे लगता है आपने कुछ नहीं कहा। '
+            : "I didn't catch that. ";
+
+          socket.emit('call:agent-response', {
+            question:   silencePrefix + lastAgentMsg.text,
+            state:      session.agentState,
+            stateLabel: STATE_LABEL[session.agentState] || session.agentState,
+            isReprompt: true,
+          });
+          return;
+        }
+
+        await handleUserResponse({ text, sessionId, socket, io });
+      } catch (error) {
+        console.error('[call:audio] Error:', error);
+        socket.emit('call:error', { message: 'Failed to process your voice response. Please try again.' });
       }
     });
 
@@ -174,6 +160,67 @@ export const registerSocketHandlers = (io) => {
   });
 };
 
+// ─── Core user answer processor ──────────────────────────────────────────────
+async function handleUserResponse({ text, sessionId, socket, io }) {
+  const session = await Session.findById(sessionId);
+  if (!session) return;
+
+  const currentState = session.agentState;
+
+  // Ignore if call is already over
+  if (currentState === AGENT_STATES.CALL_COMPLETE) return;
+
+  // Save user turn
+  session.transcript.push({ role: 'user', text, state: currentState });
+
+  // Build collected answers map for context (guard against legacy sessions)
+  const rawMap = session.collectedAnswers;
+  const collectedAnswers = rawMap instanceof Map
+    ? Object.fromEntries(rawMap)
+    : (rawMap || {});
+
+  // ── Call the orchestrator LLM ─────────────────────────────────────────
+  const result = await processAnswer({
+    transcript: text,
+    currentState,
+    language: session.language,
+    collectedAnswers,
+  });
+
+  // Persist extracted field using the proper field name from STATE_FIELD map
+  if (result.extractedValue !== null && result.extractedValue !== undefined) {
+    const fieldKey = STATE_FIELD[currentState];
+    if (fieldKey) {
+      session.collectedAnswers.set(fieldKey, result.extractedValue);
+    }
+  }
+
+  // Persist agent reply
+  session.transcript.push({
+    role: 'agent',
+    text: result.nextQuestion || '',
+    state: result.nextState,
+  });
+  session.agentState = result.nextState;
+  await session.save();
+
+  // ── Emit agent response to frontend ──────────────────────────────────
+  socket.emit('call:agent-response', {
+    question:      result.nextQuestion,
+    state:         result.nextState,
+    stateLabel:    STATE_LABEL[result.nextState] || result.nextState,
+    extractedValue: result.extractedValue,
+    confidence:    result.confidence,
+    fraudSignals:  result.fraudSignals,
+    probeRequired: result.probeRequired,
+  });
+
+  // ── Call complete: extract KYC + run loan engine ──────────────────────
+  if (result.nextState === AGENT_STATES.CALL_COMPLETE) {
+    await handleCallComplete(session, io, sessionId);
+  }
+}
+
 // ─── Post-call processing ─────────────────────────────────────────────────────
 async function handleCallComplete(session, io, sessionId) {
   try {
@@ -182,33 +229,20 @@ async function handleCallComplete(session, io, sessionId) {
     // 1. Extract structured KYC fields from the full transcript
     const extracted = await extractKYCFromTranscript(session.transcript, session.language);
     session.extractedAnswers = extracted;
-    console.log(`📋 KYC extraction done. Running loan engine...`);
-
-    // 2. Run the personal loan decision engine
-    const decision = await evaluateLoan(
-      extracted,
-      session.fraudSignals || [],
-      session.language
-    );
-
-    // Convert ruleFlags plain object → Map for Mongoose compatibility
-    const decisionToSave = {
-      ...decision,
-      ruleFlags: new Map(Object.entries(decision.ruleFlags || {})),
-      decidedAt: decision.decidedAt || new Date(),
-    };
-    session.loanDecision = decisionToSave;
+    
+    // We do NOT run the loan engine here anymore.
+    // The user will review the extracted data on the frontend and submit it via REST API.
+    
     session.status = 'completed';
     session.endTime = new Date();
     await session.save();
 
-    console.log(`🏦 Loan decision: ${decision.decision} (score: ${decision.score})`);
+    console.log(`📋 KYC extraction done and saved. Emitting to frontend for review.`);
 
-    // 3. Emit results to the frontend
+    // 2. Emit results to the frontend
     io.to(sessionId).emit('call:complete', {
       sessionId,
       extractedFields: extracted,
-      loanDecision: decision,
     });
 
   } catch (err) {

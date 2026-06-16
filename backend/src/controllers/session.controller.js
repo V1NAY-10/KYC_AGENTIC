@@ -101,3 +101,57 @@ export const getSession = async (req, res) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 };
+
+export const submitReview = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { extractedFields } = req.body;
+    
+    if (!extractedFields) {
+      return res.status(400).json({ error: 'extractedFields is required' });
+    }
+
+    const session = await Session.findById(id);
+
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    if (session.clerkId !== req.auth.userId) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    // 1. Save the finalized edited fields
+    session.extractedAnswers = extractedFields;
+    
+    // 2. Run the loan decision engine
+    const { evaluateLoan } = await import('../services/ai/loanEngine.service.js');
+    
+    const decision = await evaluateLoan(
+      extractedFields,
+      session.fraudSignals || [],
+      session.language
+    );
+
+    // Convert ruleFlags plain object → Map for Mongoose compatibility
+    const decisionToSave = {
+      ...decision,
+      ruleFlags: new Map(Object.entries(decision.ruleFlags || {})),
+      decidedAt: decision.decidedAt || new Date(),
+    };
+    
+    session.loanDecision = decisionToSave;
+    await session.save();
+
+    console.log(`🏦 Loan decision finalized via review form: ${decision.decision} (score: ${decision.score})`);
+
+    res.json({ 
+      message: 'Application submitted successfully',
+      loanDecision: decision 
+    });
+
+  } catch (error) {
+    console.error('Error submitting review:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};

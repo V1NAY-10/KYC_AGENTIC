@@ -42,15 +42,24 @@ export default function CallPage() {
   const [fraudWarning, setFraudWarning] = useState<string | null>(null);
 
   // Speech hooks
-  const { isListening, transcript, startListening, stopListening, resetTranscript } =
-    useSpeechRecognition(language === 'hi' ? 'hi-IN' : 'en-US');
+  const { isListening, transcript, startListening, stopListening, resetTranscript, setTranscript } =
+    useSpeechRecognition({
+      stream,
+      onAudioReady: (blob) => {
+        const s = socketRef.current;
+        if (s && sessionId) {
+          console.log('📤 Sending audio blob over socket.io, size:', blob.size);
+          setCallStatus('processing');
+          setFraudWarning(null);
+          s.emit('call:audio', { audio: blob, sessionId });
+        }
+      }
+    });
   const { speak, stop: stopSpeaking, isSpeaking } = useSpeechSynthesis();
 
   // Silence detection refs
   const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const socketRef = useRef<Socket | null>(null);
-  const transcriptSentRef = useRef<string>(''); // track what was last sent so we don't double-send
-  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const clearSilenceTimer = useCallback(() => {
     if (silenceTimerRef.current) {
@@ -61,14 +70,15 @@ export default function CallPage() {
 
   const startSilenceTimer = useCallback(() => {
     clearSilenceTimer();
+    // Start listening immediately
+    startListening();
+    
+    // Automatically stop and send whatever audio we captured after 7 seconds
     silenceTimerRef.current = setTimeout(() => {
-      const s = socketRef.current;
-      if (s && sessionId) {
-        console.log('🔇 Silence timeout — emitting call:silence');
-        s.emit('call:silence', { sessionId });
-      }
+      console.log('⏳ 7 seconds passed — auto-stopping recording to process');
+      stopListening();
     }, SILENCE_TIMEOUT_MS);
-  }, [clearSilenceTimer, sessionId]);
+  }, [clearSilenceTimer, startListening, stopListening]);
 
   // ─── Socket setup ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -113,18 +123,17 @@ export default function CallPage() {
 
       stopListening();
       resetTranscript();
-      transcriptSentRef.current = '';
 
       speak(data.question, language === 'hi' ? 'hi-IN' : 'en-US', () => {
         if (data.state !== 'CALL_COMPLETE') {
-          startListening();
-          startSilenceTimer(); // start silence timer once agent stops speaking
+          // Agent finished speaking, start recording and 7s timer
+          startSilenceTimer();
         }
       });
     });
 
     // Call complete — navigate to review with results
-    newSocket.on('call:complete', (data: { sessionId: string; extractedFields: any[]; loanDecision: any }) => {
+    newSocket.on('call:complete', (data: { sessionId: string; extractedFields: any[] }) => {
       console.log('🏁 Call complete, navigating to review');
       setCallStatus('complete');
       clearSilenceTimer();
@@ -132,6 +141,11 @@ export default function CallPage() {
       // Store results in sessionStorage for the review page
       sessionStorage.setItem('kycReviewData', JSON.stringify(data));
       setTimeout(() => router.push('/onboard/review'), 1500);
+    });
+
+    newSocket.on('call:user-transcript', (data: { text: string }) => {
+      console.log('🗣 User transcript from backend:', data.text);
+      setTranscript(data.text);
     });
 
     newSocket.on('call:error', (data: { message: string }) => {
@@ -144,34 +158,14 @@ export default function CallPage() {
 
     return () => {
       clearSilenceTimer();
-      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
       newSocket.disconnect();
       socketRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, language, router]);
 
-  // ─── Transcript debounce send ──────────────────────────────────────────────
-  // When transcript changes and user pauses for 1.5s → send to backend
-  useEffect(() => {
-    if (!transcript || isSpeaking || !socket) return;
-    // Don't re-send the same transcript
-    if (transcript === transcriptSentRef.current) return;
-
-    // Clear silence timer immediately since the user has started speaking
-    clearSilenceTimer();
-
-    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-
-    debounceTimerRef.current = setTimeout(() => {
-      transcriptSentRef.current = transcript;
-      setCallStatus('processing');
-      setFraudWarning(null);
-      socket.emit('call:transcript', { text: transcript, sessionId });
-      stopListening();
-    }, 1500);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [transcript, isSpeaking, socket, sessionId]);
+  // Audio recording handles voice capture and transmission natively via VAD; 
+  // no manual text debouncer needed here.
 
   // ─── Step progress calculation ─────────────────────────────────────────────
   const currentStepIndex = CALL_STEPS.findIndex(s => s.key === currentState);
@@ -292,6 +286,18 @@ export default function CallPage() {
               }`}>
                 {transcript || (isListening ? 'Speak now...' : callStatus === 'processing' ? 'Processing...' : 'Waiting for agent...')}
               </div>
+              {isListening && (
+                <button
+                  onClick={() => {
+                    console.log('🎤 Manual stop request from button');
+                    clearSilenceTimer();
+                    stopListening();
+                  }}
+                  className="mt-2 w-full py-2 px-3 rounded-lg bg-green-600/80 hover:bg-green-600 text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition-all duration-300 border border-green-500/30 hover:scale-[1.02] active:scale-95"
+                >
+                  <span>✋ Done Speaking</span>
+                </button>
+              )}
             </div>
           </div>
 

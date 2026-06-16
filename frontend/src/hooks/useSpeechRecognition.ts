@@ -1,110 +1,104 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+'use client';
 
-export const useSpeechRecognition = (language: string = 'en-US') => {
+import { useState, useRef, useCallback, useEffect } from 'react';
+
+interface UseAudioRecorderOptions {
+  stream: MediaStream | null;
+  onAudioReady: (blob: Blob) => void;
+}
+
+/**
+ * Minimal, reliable audio recorder hook.
+ * Just starts/stops MediaRecorder on the existing mic stream.
+ * No VAD, no AudioContext, no complexity.
+ */
+export const useSpeechRecognition = ({ stream, onAudioReady }: UseAudioRecorderOptions) => {
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState('');
-  const recognitionRef = useRef<any>(null);
-  const shouldListenRef = useRef(false);
 
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      if (SpeechRecognition) {
-        const recognition = new SpeechRecognition();
-        recognitionRef.current = recognition;
-        recognition.continuous = true;
-        recognition.interimResults = false;
-        recognition.lang = language;
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const onAudioReadyRef = useRef(onAudioReady);
+  const streamRef = useRef<MediaStream | null>(null);
 
-        recognition.onstart = () => {
-          setIsListening(true);
-        };
-
-        recognition.onresult = (event: any) => {
-          let currentTranscript = '';
-          for (let i = event.resultIndex; i < event.results.length; ++i) {
-            if (event.results[i].isFinal) {
-              currentTranscript += event.results[i][0].transcript;
-            }
-          }
-          if (currentTranscript) {
-            setTranscript((prev) => prev + (prev ? ' ' : '') + currentTranscript.trim());
-          }
-        };
-
-        recognition.onerror = (event: any) => {
-          console.error('Speech recognition error', event.error);
-          // Don't auto-restart if permission was denied or blocked
-          if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-            shouldListenRef.current = false;
-            setIsListening(false);
-          }
-        };
-
-        recognition.onend = () => {
-          // If we should be listening, auto-restart speech recognition after a short delay
-          if (shouldListenRef.current) {
-            console.log('Speech recognition ended unexpectedly. Restarting...');
-            setTimeout(() => {
-              if (shouldListenRef.current && recognitionRef.current) {
-                try {
-                  recognitionRef.current.start();
-                } catch (e) {
-                  console.error('Failed to restart speech recognition', e);
-                  setIsListening(false);
-                }
-              }
-            }, 100);
-          } else {
-            setIsListening(false);
-          }
-        };
-      } else {
-        console.warn("Speech recognition not supported in this browser.");
-      }
-    }
-
-    return () => {
-      if (recognitionRef.current) {
-        const rec = recognitionRef.current;
-        rec.onstart = null;
-        rec.onresult = null;
-        rec.onerror = null;
-        rec.onend = null;
-        try {
-          rec.stop();
-        } catch (e) {
-          console.error('Error stopping recognition during cleanup', e);
-        }
-      }
-    };
-  }, [language]);
+  // Keep refs in sync with latest props to avoid stale closures
+  useEffect(() => { onAudioReadyRef.current = onAudioReady; }, [onAudioReady]);
+  useEffect(() => { streamRef.current = stream; }, [stream]);
 
   const startListening = useCallback(() => {
-    shouldListenRef.current = true;
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.start();
-        setIsListening(true);
-      } catch (e) {
-        console.error('Could not start listening', e);
-      }
+    const currentStream = streamRef.current;
+    if (!currentStream) {
+      console.warn('[Recorder] No stream available yet.');
+      return;
     }
+    // Stop any existing recorder first
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+
+    // Only record the audio track
+    const audioTracks = currentStream.getAudioTracks();
+    if (audioTracks.length === 0) {
+      console.warn('[Recorder] No audio tracks found in stream.');
+      return;
+    }
+    const audioStream = new MediaStream(audioTracks);
+
+    // Pick the best supported mime type
+    const mimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg', 'audio/mp4']
+      .find(t => MediaRecorder.isTypeSupported(t)) || '';
+
+    console.log(`[Recorder] Starting with mimeType: "${mimeType}"`);
+
+    const recorder = new MediaRecorder(audioStream, mimeType ? { mimeType } : {});
+    chunksRef.current = [];
+
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) {
+        chunksRef.current.push(e.data);
+        console.log(`[Recorder] Chunk received: ${e.data.size} bytes`);
+      }
+    };
+
+    recorder.onstop = () => {
+      const blob = new Blob(chunksRef.current, { type: mimeType || 'audio/webm' });
+      console.log(`[Recorder] Stopped. Total blob size: ${blob.size} bytes`);
+      if (blob.size > 0) {
+        onAudioReadyRef.current(blob);
+      } else {
+        console.warn('[Recorder] Empty blob — nothing was recorded.');
+      }
+    };
+
+    recorder.onerror = (e) => {
+      console.error('[Recorder] MediaRecorder error:', e);
+      setIsListening(false);
+    };
+
+    recorder.start(250); // collect data every 250ms
+    mediaRecorderRef.current = recorder;
+    setIsListening(true);
+    console.log('[Recorder] Recording started.');
   }, []);
 
   const stopListening = useCallback(() => {
-    shouldListenRef.current = false;
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.stop();
-      } catch (e) {
-        console.error('Could not stop listening', e);
-      }
-      setIsListening(false);
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+      console.log('[Recorder] Stop requested.');
     }
+    setIsListening(false);
   }, []);
 
   const resetTranscript = useCallback(() => setTranscript(''), []);
 
-  return { isListening, transcript, startListening, stopListening, resetTranscript };
+  // Clean up on unmount
+  useEffect(() => {
+    return () => {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+      }
+    };
+  }, []);
+
+  return { isListening, transcript, setTranscript, startListening, stopListening, resetTranscript };
 };

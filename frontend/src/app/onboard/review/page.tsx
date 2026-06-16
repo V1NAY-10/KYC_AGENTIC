@@ -1,8 +1,10 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAppStore } from '@/store/useAppStore';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface KYCField {
   key: string;
@@ -13,6 +15,8 @@ interface KYCField {
   confidence: number;
   isFlagged: boolean;
   isEdited: boolean;
+  isLocked?: boolean;
+  source?: string;
 }
 
 interface LoanDecision {
@@ -28,54 +32,360 @@ interface LoanDecision {
   } | null;
 }
 
-interface ReviewData {
-  sessionId: string;
-  extractedFields: KYCField[];
-  loanDecision: LoanDecision;
-}
+// ─── Config ───────────────────────────────────────────────────────────────────
 
 const DECISION_CONFIG = {
-  approved:      { label: 'Approved',       color: 'green',  icon: '✅', bg: 'bg-green-500/10',  border: 'border-green-500/30',  text: 'text-green-400' },
-  conditional:   { label: 'Conditional',    color: 'yellow', icon: '⚠️', bg: 'bg-yellow-500/10', border: 'border-yellow-500/30', text: 'text-yellow-400' },
-  rejected:      { label: 'Rejected',       color: 'red',    icon: '❌', bg: 'bg-red-500/10',    border: 'border-red-500/30',    text: 'text-red-400' },
-  manual_review: { label: 'Under Review',   color: 'blue',   icon: '🔍', bg: 'bg-blue-500/10',   border: 'border-blue-500/30',   text: 'text-blue-400' },
+  approved:      { label: 'Approved',     icon: '✅', bg: 'from-green-500/20 to-emerald-500/10',  border: 'border-green-500/40',  text: 'text-green-400',  badge: 'bg-green-500/20 text-green-300' },
+  conditional:   { label: 'Conditional',  icon: '⚠️', bg: 'from-yellow-500/20 to-amber-500/10',   border: 'border-yellow-500/40', text: 'text-yellow-400', badge: 'bg-yellow-500/20 text-yellow-300' },
+  rejected:      { label: 'Rejected',     icon: '❌', bg: 'from-red-500/20 to-rose-500/10',       border: 'border-red-500/40',    text: 'text-red-400',    badge: 'bg-red-500/20 text-red-300' },
+  manual_review: { label: 'Under Review', icon: '🔍', bg: 'from-blue-500/20 to-indigo-500/10',    border: 'border-blue-500/40',   text: 'text-blue-400',   badge: 'bg-blue-500/20 text-blue-300' },
 };
 
 const SECTION_CONFIG = {
-  personal:  { label: 'Personal Information', icon: '👤' },
-  financial: { label: 'Financial Details',    icon: '💰' },
-  loan:      { label: 'Loan Details',         icon: '🏦' },
+  personal:  { label: 'Personal Information', icon: '👤', color: 'text-violet-400', border: 'border-violet-500/30' },
+  financial: { label: 'Financial Details',    icon: '💰', color: 'text-blue-400',   border: 'border-blue-500/30'   },
+  loan:      { label: 'Loan Details',         icon: '🏦', color: 'text-emerald-400', border: 'border-emerald-500/30' },
 };
 
-function ConfidenceBadge({ confidence }: { confidence: number }) {
-  const pct = Math.round(confidence * 100);
-  const color = pct >= 80 ? 'text-green-400' : pct >= 60 ? 'text-yellow-400' : 'text-red-400';
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+function ConfidencePill({ confidence }: { confidence: number }) {
+  const pct = Math.round((confidence ?? 0) * 100);
+  const cls = pct >= 80 ? 'bg-green-500/20 text-green-300' : pct >= 60 ? 'bg-yellow-500/20 text-yellow-300' : 'bg-red-500/20 text-red-300';
   return (
-    <span className={`text-[10px] font-bold ${color}`}>{pct}%</span>
+    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${cls}`}>{pct}%</span>
   );
 }
 
+function FieldCard({
+  field,
+  onEdit,
+}: {
+  field: KYCField;
+  onEdit: (key: string, value: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [inputVal, setInputVal] = useState(String(field.finalValue ?? field.aiExtractedValue ?? ''));
+
+  const handleSave = () => {
+    onEdit(field.key, inputVal);
+    setEditing(false);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') handleSave();
+    if (e.key === 'Escape') setEditing(false);
+  };
+
+  const displayValue = field.finalValue ?? field.aiExtractedValue;
+
+  return (
+    <div className={`relative p-4 rounded-xl border transition-all duration-200 group ${
+      field.isFlagged
+        ? 'bg-amber-500/5 border-amber-500/30 hover:border-amber-500/50'
+        : field.isEdited
+        ? 'bg-blue-500/5 border-blue-500/30 hover:border-blue-500/50'
+        : 'bg-white/5 border-white/10 hover:border-white/20'
+    }`}>
+      {/* Header row */}
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[10px] uppercase tracking-wider text-white/40 font-semibold">{field.label}</span>
+        <div className="flex items-center gap-1.5">
+          <ConfidencePill confidence={field.confidence} />
+          {field.isFlagged && (
+            <span className="text-[9px] px-1.5 py-0.5 bg-amber-500/20 text-amber-300 rounded-full font-bold">LOW CONF</span>
+          )}
+          {field.isEdited && (
+            <span className="text-[9px] px-1.5 py-0.5 bg-blue-500/20 text-blue-300 rounded-full font-bold">EDITED</span>
+          )}
+        </div>
+      </div>
+
+      {/* Value / Edit input */}
+      {editing ? (
+        <div className="flex gap-2">
+          <input
+            autoFocus
+            className="flex-1 bg-white/10 border border-blue-500/50 rounded-lg px-3 py-1.5 text-sm text-white outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400/30"
+            value={inputVal}
+            onChange={e => setInputVal(e.target.value)}
+            onKeyDown={handleKeyDown}
+          />
+          <button
+            onClick={handleSave}
+            className="px-3 py-1.5 rounded-lg bg-blue-500/80 hover:bg-blue-500 text-white text-xs font-semibold transition-colors"
+          >
+            Save
+          </button>
+        </div>
+      ) : (
+        <div className="flex items-end justify-between gap-2">
+          <p className="text-sm font-medium text-white break-words min-h-[1.25rem]">
+            {displayValue != null && displayValue !== ''
+              ? String(displayValue)
+              : <span className="text-white/30 italic">Not provided</span>
+            }
+          </p>
+          {!field.isLocked && (
+            <button
+              onClick={() => {
+                setInputVal(String(displayValue ?? ''));
+                setEditing(true);
+              }}
+              className="opacity-0 group-hover:opacity-100 shrink-0 p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white/60 hover:text-white text-xs transition-all duration-150"
+              title="Edit"
+            >
+              ✏️
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Main Component ───────────────────────────────────────────────────────────
+
+type PagePhase = 'review' | 'submitting' | 'decision';
+
 export default function ReviewPage() {
   const router = useRouter();
-  const { reset } = useAppStore();
-  const [data, setData] = useState<ReviewData | null>(null);
-  const [activeSection, setActiveSection] = useState<'personal' | 'financial' | 'loan'>('personal');
+  const { sessionId, reset } = useAppStore();
 
+  const [fields, setFields] = useState<KYCField[]>([]);
+  const [storedSessionId, setStoredSessionId] = useState<string>('');
+  const [activeSection, setActiveSection] = useState<'personal' | 'financial' | 'loan'>('personal');
+  const [phase, setPhase] = useState<PagePhase>('review');
+  const [loanDecision, setLoanDecision] = useState<LoanDecision | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  // ── Load from sessionStorage ──────────────────────────────────────────────
   useEffect(() => {
     const raw = sessionStorage.getItem('kycReviewData');
     if (!raw) {
-      // No data — go back
       router.push('/onboard/setup');
       return;
     }
     try {
-      setData(JSON.parse(raw));
+      const parsed = JSON.parse(raw);
+      setFields(parsed.extractedFields ?? []);
+      setStoredSessionId(parsed.sessionId ?? sessionId ?? '');
     } catch {
       router.push('/onboard/setup');
     }
-  }, [router]);
+  }, [router, sessionId]);
 
-  if (!data) {
+  // ── Edit handler ──────────────────────────────────────────────────────────
+  const handleEdit = useCallback((key: string, value: string) => {
+    setFields(prev =>
+      prev.map(f =>
+        f.key === key
+          ? { ...f, finalValue: value, isEdited: true }
+          : f
+      )
+    );
+  }, []);
+
+  // ── Submit to loan engine ─────────────────────────────────────────────────
+  const handleSubmit = useCallback(async () => {
+    setSubmitError(null);
+    setPhase('submitting');
+
+    const sid = storedSessionId || sessionId;
+    if (!sid) {
+      setSubmitError('Session ID missing. Please restart the interview.');
+      setPhase('review');
+      return;
+    }
+
+    try {
+      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
+      const res = await fetch(`${API_URL}/sessions/${sid}/submit-review`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ extractedFields: fields }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Submission failed. Please try again.');
+      }
+
+      const result = await res.json();
+      setLoanDecision(result.loanDecision);
+      setPhase('decision');
+    } catch (err: any) {
+      console.error('[ReviewPage] Submit error:', err);
+      setSubmitError(err.message || 'An unexpected error occurred.');
+      setPhase('review');
+    }
+  }, [fields, storedSessionId, sessionId]);
+
+  // ── Derived state ─────────────────────────────────────────────────────────
+  const fieldsBySection = {
+    personal:  fields.filter(f => f.section === 'personal'),
+    financial: fields.filter(f => f.section === 'financial'),
+    loan:      fields.filter(f => f.section === 'loan'),
+  };
+  const editedCount  = fields.filter(f => f.isEdited).length;
+  const flaggedCount = fields.filter(f => f.isFlagged).length;
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // PHASE: Submitting (loading overlay)
+  // ─────────────────────────────────────────────────────────────────────────
+  if (phase === 'submitting') {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[70vh] gap-6 animate-fade-in">
+        <div className="relative w-20 h-20">
+          <div className="absolute inset-0 rounded-full border-4 border-blue-500/20" />
+          <div className="absolute inset-0 rounded-full border-4 border-transparent border-t-blue-500 animate-spin" />
+          <div className="absolute inset-0 flex items-center justify-center text-2xl">🏦</div>
+        </div>
+        <div className="text-center">
+          <h2 className="text-xl font-bold text-white mb-2">Processing Your Application</h2>
+          <p className="text-white/50 text-sm">Our AI loan engine is evaluating your profile...</p>
+        </div>
+        <div className="flex gap-1.5">
+          {[0, 1, 2].map(i => (
+            <div
+              key={i}
+              className="w-2 h-2 rounded-full bg-blue-500 animate-bounce"
+              style={{ animationDelay: `${i * 0.15}s` }}
+            />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // PHASE: Decision result
+  // ─────────────────────────────────────────────────────────────────────────
+  if (phase === 'decision' && loanDecision) {
+    const decision = loanDecision.decision || 'manual_review';
+    const config = DECISION_CONFIG[decision];
+    const score = loanDecision.score ?? 0;
+
+    return (
+      <div className="max-w-3xl mx-auto px-4 py-10 animate-fade-in">
+        <div className="text-center mb-8">
+          <div className="text-6xl mb-3">{config.icon}</div>
+          <h1 className="text-3xl font-black text-white mb-1">Loan Decision</h1>
+          <span className={`inline-block px-4 py-1 rounded-full text-sm font-bold uppercase tracking-wider ${config.badge}`}>
+            {config.label}
+          </span>
+        </div>
+
+        {/* Score + Summary card */}
+        <div className={`rounded-2xl p-6 border bg-gradient-to-br ${config.bg} ${config.border} mb-6`}>
+          <div className="flex flex-col sm:flex-row gap-6 items-center">
+            {/* Score ring */}
+            <div className="flex flex-col items-center shrink-0">
+              <div className="relative w-24 h-24">
+                <svg viewBox="0 0 36 36" className="w-24 h-24 -rotate-90">
+                  <circle cx="18" cy="18" r="15.9" fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="2.5" />
+                  <circle
+                    cx="18" cy="18" r="15.9" fill="none"
+                    stroke={score >= 70 ? '#22c55e' : score >= 40 ? '#eab308' : '#ef4444'}
+                    strokeWidth="2.5"
+                    strokeDasharray={`${score} ${100 - score}`}
+                    strokeLinecap="round"
+                    className="transition-all duration-1000"
+                  />
+                </svg>
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <span className="text-2xl font-black text-white">{score}</span>
+                </div>
+              </div>
+              <span className="text-xs text-white/40 mt-1.5">Credit Score</span>
+            </div>
+
+            <div className="flex-1">
+              {loanDecision.llmAssessment?.summary && (
+                <p className="text-white/80 text-sm italic mb-4">"{loanDecision.llmAssessment.summary}"</p>
+              )}
+              {loanDecision.reasons?.length > 0 && (
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-white/40 mb-1.5">Key Factors</p>
+                  <ul className="space-y-1">
+                    {loanDecision.reasons.slice(0, 4).map((r, i) => (
+                      <li key={i} className="flex items-start gap-2 text-xs text-white/70">
+                        <span className="shrink-0 text-white/30 mt-0.5">•</span>{r}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {loanDecision.conditions?.length > 0 && (
+            <div className="mt-4 pt-4 border-t border-white/10">
+              <p className="text-[10px] uppercase tracking-wider text-amber-400 mb-2">Conditions</p>
+              <ul className="space-y-1">
+                {loanDecision.conditions.map((c, i) => (
+                  <li key={i} className="flex items-start gap-2 text-xs text-amber-300/80">
+                    <span className="shrink-0">→</span>{c}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+
+        {/* Strengths/Risks */}
+        {loanDecision.llmAssessment && (
+          <div className="grid grid-cols-2 gap-4 mb-8">
+            <div className="p-4 rounded-xl bg-green-500/5 border border-green-500/20">
+              <p className="text-[10px] uppercase tracking-wider text-green-400 mb-2 font-bold">✓ Strengths</p>
+              {loanDecision.llmAssessment.strengths?.length > 0
+                ? loanDecision.llmAssessment.strengths.map((s, i) => (
+                    <p key={i} className="text-xs text-white/60 mb-1">{s}</p>
+                  ))
+                : <p className="text-xs text-white/30">None identified</p>
+              }
+            </div>
+            <div className="p-4 rounded-xl bg-red-500/5 border border-red-500/20">
+              <p className="text-[10px] uppercase tracking-wider text-red-400 mb-2 font-bold">✗ Risks</p>
+              {loanDecision.llmAssessment.risks?.length > 0
+                ? loanDecision.llmAssessment.risks.map((r, i) => (
+                    <p key={i} className="text-xs text-white/60 mb-1">{r}</p>
+                  ))
+                : <p className="text-xs text-white/30">None identified</p>
+              }
+            </div>
+          </div>
+        )}
+
+        <div className="flex flex-col sm:flex-row gap-3 justify-center">
+          <button
+            className="btn-primary bg-white/10 hover:bg-white/20 text-white text-sm border border-white/20"
+            onClick={() => {
+              sessionStorage.removeItem('kycReviewData');
+              reset();
+              router.push('/');
+            }}
+          >
+            Back to Home
+          </button>
+          {decision !== 'rejected' && (
+            <button
+              className="btn-primary text-sm"
+              onClick={() => alert('Application forwarded to Loan Officer. You will be contacted within 2 business days.')}
+            >
+              Forward to Loan Officer →
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // PHASE: Review — editable form
+  // ─────────────────────────────────────────────────────────────────────────
+  if (fields.length === 0) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
         <div className="text-white/40 text-sm animate-pulse">Loading your results...</div>
@@ -83,193 +393,69 @@ export default function ReviewPage() {
     );
   }
 
-  const { extractedFields, loanDecision } = data;
-  const decision = loanDecision?.decision || 'manual_review';
-  const config = DECISION_CONFIG[decision];
-  const score = loanDecision?.score ?? 0;
-
-  const fieldsBySection = {
-    personal:  extractedFields.filter(f => f.section === 'personal'),
-    financial: extractedFields.filter(f => f.section === 'financial'),
-    loan:      extractedFields.filter(f => f.section === 'loan'),
-  };
-
-  const flaggedCount = extractedFields.filter(f => f.isFlagged).length;
-
   return (
     <div className="max-w-5xl mx-auto px-4 py-8 animate-fade-in">
-      <h1 className="text-3xl font-bold text-gradient mb-2 text-center">Application Summary</h1>
-      <p className="text-center text-white/50 text-sm mb-8">
-        Your KYC interview has been processed. Review the extracted information and loan decision below.
-      </p>
 
-      {/* ─── Loan Decision Card ──────────────────────────────────────────────── */}
-      <div className={`rounded-2xl p-6 border ${config.bg} ${config.border} mb-8 relative overflow-hidden`}>
-        {/* Subtle glow */}
-        <div className={`absolute inset-0 opacity-10 bg-gradient-to-br ${
-          decision === 'approved' ? 'from-green-500 to-emerald-600' :
-          decision === 'rejected' ? 'from-red-500 to-rose-600' :
-          decision === 'conditional' ? 'from-yellow-500 to-amber-600' :
-          'from-blue-500 to-indigo-600'
-        } pointer-events-none`} />
+      {/* Header */}
+      <div className="text-center mb-8">
+        <h1 className="text-3xl font-bold text-gradient mb-2">Review Your Application</h1>
+        <p className="text-white/50 text-sm max-w-xl mx-auto">
+          Your interview has been processed. Review the information below — hover any field to edit it.
+          Once you&apos;re happy, confirm to run the loan evaluation.
+        </p>
+      </div>
 
-        <div className="relative flex flex-col md:flex-row gap-6 items-start md:items-center">
-          {/* Decision badge */}
-          <div className="flex flex-col items-center shrink-0">
-            <div className="text-5xl mb-2">{config.icon}</div>
-            <span className={`text-lg font-bold uppercase tracking-widest ${config.text}`}>
-              {config.label}
-            </span>
-          </div>
-
-          {/* Score gauge */}
-          <div className="flex flex-col items-center shrink-0">
-            <div className="relative w-20 h-20">
-              <svg viewBox="0 0 36 36" className="w-20 h-20 -rotate-90">
-                <circle cx="18" cy="18" r="15.9" fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="2.5" />
-                <circle
-                  cx="18" cy="18" r="15.9" fill="none"
-                  stroke={score >= 70 ? '#22c55e' : score >= 40 ? '#eab308' : '#ef4444'}
-                  strokeWidth="2.5"
-                  strokeDasharray={`${score} ${100 - score}`}
-                  strokeLinecap="round"
-                  className="transition-all duration-1000"
-                />
-              </svg>
-              <div className="absolute inset-0 flex items-center justify-center">
-                <span className="text-xl font-black text-white">{score}</span>
-              </div>
-            </div>
-            <span className="text-xs text-white/40 mt-1">Credit Score</span>
-          </div>
-
-          {/* Summary & Reasons */}
-          <div className="flex-1">
-            {loanDecision?.llmAssessment?.summary && (
-              <p className="text-white/80 text-sm mb-3 italic">"{loanDecision.llmAssessment.summary}"</p>
-            )}
-
-            {loanDecision?.reasons?.length > 0 && (
-              <div className="mb-3">
-                <p className="text-xs uppercase tracking-wider text-white/40 mb-1">Key Factors</p>
-                <ul className="space-y-1">
-                  {loanDecision.reasons.slice(0, 3).map((r, i) => (
-                    <li key={i} className="flex items-start gap-2 text-xs text-white/70">
-                      <span className="shrink-0 mt-0.5">•</span>{r}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            {loanDecision?.conditions?.length > 0 && (
-              <div>
-                <p className="text-xs uppercase tracking-wider text-amber-400/70 mb-1">Conditions</p>
-                <ul className="space-y-1">
-                  {loanDecision.conditions.map((c, i) => (
-                    <li key={i} className="flex items-start gap-2 text-xs text-amber-300/80">
-                      <span className="shrink-0 mt-0.5">→</span>{c}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </div>
+      {/* Status bar */}
+      <div className="flex items-center justify-center gap-4 mb-8 flex-wrap">
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10 text-xs text-white/60">
+          <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse inline-block" />
+          {fields.length} fields extracted
         </div>
-
-        {/* Strengths / Risks row */}
-        {loanDecision?.llmAssessment && (
-          <div className="relative mt-4 pt-4 border-t border-white/10 grid grid-cols-2 gap-4">
-            <div>
-              <p className="text-xs uppercase tracking-wider text-green-400/70 mb-1">Strengths</p>
-              {loanDecision.llmAssessment.strengths.length > 0 ? (
-                <ul className="space-y-1">
-                  {loanDecision.llmAssessment.strengths.map((s, i) => (
-                    <li key={i} className="text-xs text-white/60 flex gap-1.5">
-                      <span className="text-green-400 shrink-0">✓</span>{s}
-                    </li>
-                  ))}
-                </ul>
-              ) : <p className="text-xs text-white/30">None identified</p>}
-            </div>
-            <div>
-              <p className="text-xs uppercase tracking-wider text-red-400/70 mb-1">Risks</p>
-              {loanDecision.llmAssessment.risks.length > 0 ? (
-                <ul className="space-y-1">
-                  {loanDecision.llmAssessment.risks.map((r, i) => (
-                    <li key={i} className="text-xs text-white/60 flex gap-1.5">
-                      <span className="text-red-400 shrink-0">✗</span>{r}
-                    </li>
-                  ))}
-                </ul>
-              ) : <p className="text-xs text-white/30">None identified</p>}
-            </div>
+        {flaggedCount > 0 && (
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-amber-500/10 border border-amber-500/30 text-xs text-amber-300">
+            ⚠️ {flaggedCount} low-confidence field{flaggedCount > 1 ? 's' : ''}
+          </div>
+        )}
+        {editedCount > 0 && (
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-blue-500/10 border border-blue-500/30 text-xs text-blue-300">
+            ✏️ {editedCount} field{editedCount > 1 ? 's' : ''} edited
           </div>
         )}
       </div>
 
-      {/* ─── KYC Fields ─────────────────────────────────────────────────────── */}
-      <div className="glass-card rounded-2xl border border-white/10 overflow-hidden">
-        <div className="p-4 border-b border-white/10 flex items-center justify-between">
-          <h2 className="text-base font-semibold text-white/90">Extracted KYC Data</h2>
-          {flaggedCount > 0 && (
-            <span className="px-2 py-0.5 bg-amber-500/20 border border-amber-500/30 rounded-full text-amber-300 text-xs font-semibold">
-              {flaggedCount} field{flaggedCount > 1 ? 's' : ''} flagged
-            </span>
-          )}
-        </div>
-
-        {/* Section tabs */}
-        <div className="flex border-b border-white/10">
-          {(Object.keys(SECTION_CONFIG) as ('personal' | 'financial' | 'loan')[]).map(sec => (
-            <button
-              key={sec}
-              onClick={() => setActiveSection(sec)}
-              className={`flex-1 py-3 text-xs font-semibold uppercase tracking-wider transition-all duration-200 ${
-                activeSection === sec
-                  ? 'bg-white/5 text-white border-b-2 border-blue-500'
-                  : 'text-white/40 hover:text-white/70'
-              }`}
-            >
-              {SECTION_CONFIG[sec].icon} {SECTION_CONFIG[sec].label}
-            </button>
-          ))}
-        </div>
-
-        {/* Fields grid */}
-        <div className="p-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
-          {(fieldsBySection[activeSection] || []).map(field => (
-            <div
-              key={field.key}
-              className={`p-4 rounded-xl border transition-all duration-200 ${
-                field.isFlagged
-                  ? 'bg-amber-500/5 border-amber-500/30'
-                  : 'bg-white/5 border-white/10'
-              }`}
-            >
-              <div className="flex items-center justify-between mb-1.5">
-                <span className="text-[10px] uppercase tracking-wider text-white/40 font-semibold">
-                  {field.label}
-                </span>
-                <div className="flex items-center gap-1.5">
-                  <ConfidenceBadge confidence={field.confidence} />
-                  {field.isFlagged && (
-                    <span className="text-[9px] px-1.5 py-0.5 bg-amber-500/20 text-amber-300 rounded font-bold">LOW CONF</span>
-                  )}
-                </div>
+      {/* Sections grid */}
+      <div className="space-y-8 mb-10">
+        {(Object.keys(SECTION_CONFIG) as Array<'personal' | 'financial' | 'loan'>).map(sec => {
+          const cfg = SECTION_CONFIG[sec];
+          const sectionFields = fieldsBySection[sec] || [];
+          if (sectionFields.length === 0) return null;
+          return (
+            <div key={sec}>
+              <div className={`flex items-center gap-2 mb-4 pb-2 border-b ${cfg.border}`}>
+                <span className="text-lg">{cfg.icon}</span>
+                <h2 className={`text-sm font-bold uppercase tracking-wider ${cfg.color}`}>{cfg.label}</h2>
+                <span className="ml-auto text-xs text-white/30">{sectionFields.length} fields</span>
               </div>
-              <p className="text-sm font-medium text-white">
-                {field.finalValue ?? field.aiExtractedValue ?? (
-                  <span className="text-white/30 italic">Not provided</span>
-                )}
-              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {sectionFields.map(field => (
+                  <FieldCard key={field.key} field={field} onEdit={handleEdit} />
+                ))}
+              </div>
             </div>
-          ))}
-        </div>
+          );
+        })}
       </div>
 
-      {/* ─── Actions ────────────────────────────────────────────────────────── */}
-      <div className="mt-8 flex flex-col sm:flex-row gap-4 justify-center">
+      {/* Error */}
+      {submitError && (
+        <div className="mb-6 p-4 rounded-xl bg-red-500/10 border border-red-500/30 text-red-300 text-sm flex items-center gap-3">
+          <span className="text-xl shrink-0">⚠️</span>
+          <span>{submitError}</span>
+        </div>
+      )}
+
+      {/* Action buttons */}
+      <div className="flex flex-col sm:flex-row gap-4 justify-center">
         <button
           className="btn-primary bg-white/10 hover:bg-white/20 text-white text-sm border border-white/20"
           onClick={() => {
@@ -278,20 +464,21 @@ export default function ReviewPage() {
             router.push('/');
           }}
         >
-          Back to Home
+          ✕ Cancel
         </button>
-        {decision !== 'rejected' && (
-          <button
-            className="btn-primary text-sm"
-            onClick={() => {
-              // In a real flow this would submit the application formally
-              alert('Application submitted! Reference number will be emailed to you.');
-            }}
-          >
-            Submit Application →
-          </button>
-        )}
+        <button
+          id="confirm-submit-btn"
+          className="btn-primary text-sm flex items-center justify-center gap-2 relative overflow-hidden group"
+          onClick={handleSubmit}
+        >
+          <span className="relative z-10">✅ Confirm & Submit Application</span>
+          <div className="absolute inset-0 bg-gradient-to-r from-blue-600 to-violet-600 opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+        </button>
       </div>
+
+      <p className="text-center text-white/25 text-xs mt-4">
+        All edits are saved locally. Submitting will trigger the loan evaluation engine.
+      </p>
     </div>
   );
 }

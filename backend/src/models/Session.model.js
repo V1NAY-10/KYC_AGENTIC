@@ -24,7 +24,7 @@ const SessionSchema = new mongoose.Schema({
   agentState: { type: String, default: 'GREETING' },
 
   transcript:       [TranscriptEntrySchema],
-  extractedAnswers: { type: Map, of: mongoose.Schema.Types.Mixed },
+  extractedAnswers: [mongoose.Schema.Types.Mixed],
   collectedAnswers: { type: Map, of: mongoose.Schema.Types.Mixed, default: {} },
   fraudSignals:     [FraudSignalSchema],
 

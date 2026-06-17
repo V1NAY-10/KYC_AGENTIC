@@ -277,3 +277,329 @@ p {
 .step-line.completed-line {
   background-color: var(--color-accent-blue);
 }
+
+/* ─── Admin Portal Utilities ──────────────────────────────────────────────── */
+
+/* Full-page ambient glow background (matches home page) */
+.admin-bg {
+  background-color: #080B14;
+  position: relative;
+  overflow: hidden;
+}
+
+.admin-bg::before {
+  content: '';
+  position: fixed;
+  top: -20%;
+  right: -10%;
+  width: 700px;
+  height: 700px;
+  background: radial-gradient(circle, rgba(59, 130, 246, 0.12) 0%, transparent 65%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.admin-bg::after {
+  content: '';
+  position: fixed;
+  bottom: -25%;
+  left: -15%;
+  width: 700px;
+  height: 700px;
+  background: radial-gradient(circle, rgba(139, 92, 246, 0.10) 0%, transparent 65%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Glassmorphism card for admin */
+.admin-glass {
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 16px;
+}
+
+/* Stat card accent glows */
+.stat-glow-blue  { box-shadow: 0 0 24px rgba(59, 130, 246, 0.08); }
+.stat-glow-amber { box-shadow: 0 0 24px rgba(245, 158, 11, 0.08); }
+.stat-glow-green { box-shadow: 0 0 24px rgba(16, 185, 129, 0.08); }
+.stat-glow-red   { box-shadow: 0 0 24px rgba(239, 68, 68, 0.08); }
+
+/* Table row hover micro-animation */
+.admin-table-row {
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+.admin-table-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+  transform: translateX(2px);
+}
+
+/* Animated status dot (pending / under_review) */
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.5; transform: scale(0.8); }
+}
+.status-dot-pulse {
+  animation: status-pulse 1.8s ease-in-out infinite;
+}
+
+/* Score ring animation */
+@keyframes score-dash {
+  from { stroke-dashoffset: 283; }
+  to   { stroke-dashoffset: var(--dash-offset); }
+}
+.score-ring-progress {
+  animation: score-dash 1s ease-out forwards;
+  transition: stroke 0.3s ease;
+}
+
+/* Shimmer skeleton loader */
+@keyframes shimmer {
+  0%   { background-position: -700px 0; }
+  100% { background-position:  700px 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, rgba(255,255,255,0.04) 25%, rgba(255,255,255,0.08) 50%, rgba(255,255,255,0.04) 75%);
+  background-size: 700px 100%;
+  animation: shimmer 1.4s infinite linear;
+  border-radius: 8px;
+}
+
+/* Fraud severity badges */
+.badge-severity-low    { background: rgba(245,158,11,0.10); color: #F59E0B; border: 1px solid rgba(245,158,11,0.25); }
+.badge-severity-medium { background: rgba(249,115,22,0.10); color: #F97316; border: 1px solid rgba(249,115,22,0.25); }
+.badge-severity-high   { background: rgba(239,68,68,0.10);  color: #EF4444; border: 1px solid rgba(239,68,68,0.25); }
+
+/* Admin header gradient accent line */
+.admin-header-line {
+  background: linear-gradient(90deg, var(--color-accent-blue), var(--color-accent-purple), transparent);
+  height: 1px;
+}
+
+/* Panel enter animation (staggered) */
+@keyframes panel-in {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.panel-in { animation: panel-in 0.4s ease-out forwards; }
+.panel-in-1 { animation-delay: 0.05s; opacity: 0; }
+.panel-in-2 { animation-delay: 0.10s; opacity: 0; }
+.panel-in-3 { animation-delay: 0.15s; opacity: 0; }
+.panel-in-4 { animation-delay: 0.20s; opacity: 0; }
+
+/* ─── PDF / Print Document ────────────────────────────────────────────────── */
+
+/* On-screen PDF wrapper */
+.pdf-outer {
+  background: linear-gradient(160deg, #0a0f1e 0%, #080B14 100%);
+  min-height: 100vh;
+  padding: 2rem 1rem 4rem;
+  position: relative;
+}
+
+.pdf-outer::before {
+  content: '';
+  position: fixed;
+  top: -20%; right: -10%;
+  width: 600px; height: 600px;
+  background: radial-gradient(circle, rgba(59,130,246,0.10) 0%, transparent 65%);
+  pointer-events: none; z-index: 0;
+}
+
+/* The "paper" document */
+.pdf-document {
+  position: relative;
+  z-index: 1;
+  background: #ffffff;
+  width: 100%;
+  max-width: 800px;
+  margin: 0 auto;
+  border-radius: 4px;
+  box-shadow:
+    0 0 0 1px rgba(0,0,0,0.06),
+    0 4px 6px rgba(0,0,0,0.04),
+    0 20px 40px rgba(0,0,0,0.25),
+    0 40px 80px rgba(0,0,0,0.20);
+  overflow: hidden;
+  font-family: 'Inter', sans-serif;
+  color: #1a1a2e;
+}
+
+/* Document header stripe */
+.pdf-header-stripe {
+  background: linear-gradient(90deg, #1d4ed8, #7c3aed);
+  height: 6px;
+}
+
+/* Document inner padding */
+.pdf-body {
+  padding: 2.5rem 3rem;
+}
+
+/* Section divider */
+.pdf-section-title {
+  font-size: 0.6875rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #1d4ed8;
+  padding-bottom: 0.5rem;
+  border-bottom: 2px solid #e8edf8;
+  margin-bottom: 0;
+}
+
+/* Field row — label + value pair */
+.pdf-field-row {
+  display: grid;
+  grid-template-columns: 200px 1fr auto;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid #f0f4ff;
+}
+
+.pdf-field-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.pdf-field-value {
+  font-size: 0.9375rem;
+  font-weight: 500;
+  color: #0f172a;
+  min-height: 1.5rem;
+}
+
+.pdf-field-input {
+  width: 100%;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  color: #0f172a;
+  border: none;
+  border-bottom: 2px solid #3b82f6;
+  outline: none;
+  background: transparent;
+  padding: 2px 0;
+  font-family: 'Inter', sans-serif;
+}
+
+.pdf-field-row.edited {
+  background: #eff6ff;
+  border-left: 3px solid #3b82f6;
+  padding-left: calc(0.75rem - 3px);
+}
+
+.pdf-field-row.flagged {
+  background: #fffbeb;
+  border-left: 3px solid #f59e0b;
+  padding-left: calc(0.75rem - 3px);
+}
+
+/* Document footer */
+.pdf-footer {
+  padding: 1rem 3rem;
+  background: #f8faff;
+  border-top: 1px solid #e8edf8;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* Confidence dot */
+.conf-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.conf-high   { background: #10b981; }
+.conf-medium { background: #f59e0b; }
+.conf-low    { background: #ef4444; }
+
+/* Edit pencil */
+.pdf-edit-btn {
+  opacity: 0;
+  background: none;
+  border: 1px solid #dbeafe;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 0.6875rem;
+  color: #3b82f6;
+  cursor: pointer;
+  transition: opacity 0.15s, background 0.15s;
+  white-space: nowrap;
+}
+.pdf-field-row:hover .pdf-edit-btn { opacity: 1; }
+.pdf-edit-btn:hover { background: #dbeafe; }
+
+/* ─── @media print ────────────────────────────────────────────────────────── */
+@media print {
+  /* Hide everything except the document */
+  body > * { display: none !important; }
+  .pdf-print-root { display: block !important; }
+
+  /* Reset body for printing */
+  body {
+    background: white !important;
+    min-height: unset;
+    display: block;
+  }
+
+  .pdf-outer {
+    background: white !important;
+    padding: 0 !important;
+  }
+
+  .pdf-outer::before { display: none; }
+
+  .pdf-document {
+    box-shadow: none !important;
+    max-width: 100% !important;
+    border-radius: 0 !important;
+  }
+
+  /* Hide action buttons */
+  .pdf-action-bar,
+  .pdf-edit-btn,
+  header,
+  nav,
+  .onboard-stepper { display: none !important; }
+
+  /* Ensure all rows print */
+  .pdf-field-row { break-inside: avoid; }
+
+  /* Force white backgrounds */
+  .pdf-field-row.edited,
+  .pdf-field-row.flagged {
+    background: white !important;
+    border-left: 2px solid #aaa !important;
+  }
+}
+
+/* ─── Interview Call Screen ───────────────────────────────────────────────── */
+
+/* Speaking ring around video */
+@keyframes speak-ring {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(59,130,246,0.6), 0 0 0 0 rgba(59,130,246,0.3); }
+  50%       { box-shadow: 0 0 0 8px rgba(59,130,246,0.2), 0 0 0 16px rgba(59,130,246,0.05); }
+}
+.speaking-ring { animation: speak-ring 1.4s ease-in-out infinite; }
+
+/* Listening ring around video */
+@keyframes listen-ring {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16,185,129,0.5); }
+  50%       { box-shadow: 0 0 0 6px rgba(16,185,129,0.1); }
+}
+.listening-ring { animation: listen-ring 1.2s ease-in-out infinite; }
+
+/* Typing dots for agent */
+@keyframes typing-dot {
+  0%, 80%, 100% { transform: scale(0); opacity: 0.3; }
+  40%           { transform: scale(1); opacity: 1; }
+}
+.typing-dot-1 { animation: typing-dot 1.2s ease-in-out 0.0s infinite; }
+.typing-dot-2 { animation: typing-dot 1.2s ease-in-out 0.2s infinite; }
+.typing-dot-3 { animation: typing-dot 1.2s ease-in-out 0.4s infinite; }

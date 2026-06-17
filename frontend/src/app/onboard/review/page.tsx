@@ -10,141 +10,113 @@ interface KYCField {
   key: string;
   label: string;
   section: 'personal' | 'financial' | 'loan';
-  aiExtractedValue: any;
-  finalValue: any;
+  aiExtractedValue: string | number | null;
+  finalValue: string | number | null;
   confidence: number;
   isFlagged: boolean;
   isEdited: boolean;
   isLocked?: boolean;
-  source?: string;
-}
-
-interface LoanDecision {
-  decision: 'approved' | 'conditional' | 'rejected' | 'manual_review';
-  score: number;
-  reasons: string[];
-  conditions: string[];
-  ruleFlags: Record<string, any>;
-  llmAssessment: {
-    strengths: string[];
-    risks: string[];
-    summary: string;
-  } | null;
 }
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
-const DECISION_CONFIG = {
-  approved:      { label: 'Approved',     icon: '✅', bg: 'from-green-500/20 to-emerald-500/10',  border: 'border-green-500/40',  text: 'text-green-400',  badge: 'bg-green-500/20 text-green-300' },
-  conditional:   { label: 'Conditional',  icon: '⚠️', bg: 'from-yellow-500/20 to-amber-500/10',   border: 'border-yellow-500/40', text: 'text-yellow-400', badge: 'bg-yellow-500/20 text-yellow-300' },
-  rejected:      { label: 'Rejected',     icon: '❌', bg: 'from-red-500/20 to-rose-500/10',       border: 'border-red-500/40',    text: 'text-red-400',    badge: 'bg-red-500/20 text-red-300' },
-  manual_review: { label: 'Under Review', icon: '🔍', bg: 'from-blue-500/20 to-indigo-500/10',    border: 'border-blue-500/40',   text: 'text-blue-400',   badge: 'bg-blue-500/20 text-blue-300' },
+const SECTION_CONFIG: Record<'personal' | 'financial' | 'loan', {
+  label: string; icon: string; accentColor: string;
+}> = {
+  personal:  { label: 'Personal Information', icon: '👤', accentColor: '#7C3AED' },
+  financial: { label: 'Financial Details',    icon: '💰', accentColor: '#1D4ED8' },
+  loan:      { label: 'Loan Details',         icon: '🏦', accentColor: '#059669' },
 };
 
-const SECTION_CONFIG = {
-  personal:  { label: 'Personal Information', icon: '👤', color: 'text-violet-400', border: 'border-violet-500/30' },
-  financial: { label: 'Financial Details',    icon: '💰', color: 'text-blue-400',   border: 'border-blue-500/30'   },
-  loan:      { label: 'Loan Details',         icon: '🏦', color: 'text-emerald-400', border: 'border-emerald-500/30' },
-};
+// ─── Confidence dot ───────────────────────────────────────────────────────────
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
-
-function ConfidencePill({ confidence }: { confidence: number }) {
+function ConfDot({ confidence }: { confidence: number }) {
   const pct = Math.round((confidence ?? 0) * 100);
-  const cls = pct >= 80 ? 'bg-green-500/20 text-green-300' : pct >= 60 ? 'bg-yellow-500/20 text-yellow-300' : 'bg-red-500/20 text-red-300';
-  return (
-    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${cls}`}>{pct}%</span>
-  );
+  const cls = pct >= 80 ? 'conf-high' : pct >= 60 ? 'conf-medium' : 'conf-low';
+  const title = `Confidence: ${pct}%`;
+  return <span className={`conf-dot ${cls}`} title={title} style={{ display: 'inline-block' }} />;
 }
 
-function FieldCard({
-  field,
-  onEdit,
-}: {
-  field: KYCField;
-  onEdit: (key: string, value: string) => void;
-}) {
+// ─── Single editable field row ────────────────────────────────────────────────
+
+function FieldRow({ field, onEdit }: { field: KYCField; onEdit: (key: string, value: string) => void }) {
   const [editing, setEditing] = useState(false);
   const [inputVal, setInputVal] = useState(String(field.finalValue ?? field.aiExtractedValue ?? ''));
 
-  const handleSave = () => {
-    onEdit(field.key, inputVal);
-    setEditing(false);
-  };
-
+  const handleSave = () => { onEdit(field.key, inputVal); setEditing(false); };
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') handleSave();
     if (e.key === 'Escape') setEditing(false);
   };
 
   const displayValue = field.finalValue ?? field.aiExtractedValue;
+  const isEmpty = displayValue == null || displayValue === '';
+
+  const rowClass = `pdf-field-row${field.isEdited ? ' edited' : field.isFlagged ? ' flagged' : ''}`;
 
   return (
-    <div className={`relative p-4 rounded-xl border transition-all duration-200 group ${
-      field.isFlagged
-        ? 'bg-amber-500/5 border-amber-500/30 hover:border-amber-500/50'
-        : field.isEdited
-        ? 'bg-blue-500/5 border-blue-500/30 hover:border-blue-500/50'
-        : 'bg-white/5 border-white/10 hover:border-white/20'
-    }`}>
-      {/* Header row */}
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-[10px] uppercase tracking-wider text-white/40 font-semibold">{field.label}</span>
-        <div className="flex items-center gap-1.5">
-          <ConfidencePill confidence={field.confidence} />
-          {field.isFlagged && (
-            <span className="text-[9px] px-1.5 py-0.5 bg-amber-500/20 text-amber-300 rounded-full font-bold">LOW CONF</span>
-          )}
-          {field.isEdited && (
-            <span className="text-[9px] px-1.5 py-0.5 bg-blue-500/20 text-blue-300 rounded-full font-bold">EDITED</span>
-          )}
-        </div>
-      </div>
+    <div className={rowClass}>
+      <span className="pdf-field-label">{field.label}</span>
 
-      {/* Value / Edit input */}
       {editing ? (
-        <div className="flex gap-2">
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <input
             autoFocus
-            className="flex-1 bg-white/10 border border-blue-500/50 rounded-lg px-3 py-1.5 text-sm text-white outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400/30"
+            className="pdf-field-input"
             value={inputVal}
             onChange={e => setInputVal(e.target.value)}
             onKeyDown={handleKeyDown}
           />
           <button
             onClick={handleSave}
-            className="px-3 py-1.5 rounded-lg bg-blue-500/80 hover:bg-blue-500 text-white text-xs font-semibold transition-colors"
-          >
-            Save
-          </button>
+            style={{
+              padding: '3px 10px', borderRadius: '5px',
+              background: '#1d4ed8', color: 'white',
+              border: 'none', cursor: 'pointer',
+              fontSize: '0.75rem', fontWeight: '700',
+              whiteSpace: 'nowrap',
+            }}
+          >Save</button>
+          <button
+            onClick={() => setEditing(false)}
+            style={{
+              padding: '3px 8px', borderRadius: '5px',
+              background: 'none', color: '#94a3b8',
+              border: '1px solid #e2e8f0', cursor: 'pointer',
+              fontSize: '0.75rem', fontWeight: '600',
+            }}
+          >✕</button>
         </div>
       ) : (
-        <div className="flex items-end justify-between gap-2">
-          <p className="text-sm font-medium text-white break-words min-h-[1.25rem]">
-            {displayValue != null && displayValue !== ''
-              ? String(displayValue)
-              : <span className="text-white/30 italic">Not provided</span>
-            }
-          </p>
-          {!field.isLocked && (
-            <button
-              onClick={() => {
-                setInputVal(String(displayValue ?? ''));
-                setEditing(true);
-              }}
-              className="opacity-0 group-hover:opacity-100 shrink-0 p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white/60 hover:text-white text-xs transition-all duration-150"
-              title="Edit"
-            >
-              ✏️
-            </button>
-          )}
-        </div>
+        <span className="pdf-field-value" style={{ color: isEmpty ? '#94a3b8' : '#0f172a', fontStyle: isEmpty ? 'italic' : 'normal' }}>
+          {isEmpty ? 'Not provided' : String(displayValue)}
+        </span>
       )}
+
+      {/* Right column: confidence + edit button */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', justifyContent: 'flex-end' }}>
+        <ConfDot confidence={field.confidence} />
+        {field.isFlagged && (
+          <span style={{ fontSize: '0.55rem', fontWeight: '700', color: '#b45309', background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: '3px', padding: '1px 4px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            Low Conf
+          </span>
+        )}
+        {field.isEdited && (
+          <span style={{ fontSize: '0.55rem', fontWeight: '700', color: '#1d4ed8', background: '#dbeafe', border: '1px solid #93c5fd', borderRadius: '3px', padding: '1px 4px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            Edited
+          </span>
+        )}
+        {!field.isLocked && !editing && (
+          <button className="pdf-edit-btn" onClick={() => { setInputVal(String(displayValue ?? '')); setEditing(true); }}>
+            ✏ Edit
+          </button>
+        )}
+      </div>
     </div>
   );
 }
 
-// ─── Main Component ───────────────────────────────────────────────────────────
+// ─── Main Page ────────────────────────────────────────────────────────────────
 
 type PagePhase = 'review' | 'submitting' | 'decision';
 
@@ -154,20 +126,15 @@ export default function ReviewPage() {
 
   const [fields, setFields] = useState<KYCField[]>([]);
   const [storedSessionId, setStoredSessionId] = useState<string>('');
-  const [activeSection, setActiveSection] = useState<'personal' | 'financial' | 'loan'>('personal');
   const [phase, setPhase] = useState<PagePhase>('review');
-  const [loanDecision, setLoanDecision] = useState<LoanDecision | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   // ── Load from sessionStorage ──────────────────────────────────────────────
   useEffect(() => {
     const raw = sessionStorage.getItem('kycReviewData');
-    if (!raw) {
-      router.push('/onboard/setup');
-      return;
-    }
+    if (!raw) { router.push('/onboard/setup'); return; }
     try {
-      const parsed = JSON.parse(raw);
+      const parsed = JSON.parse(raw) as { extractedFields?: KYCField[]; sessionId?: string };
       setFields(parsed.extractedFields ?? []);
       setStoredSessionId(parsed.sessionId ?? sessionId ?? '');
     } catch {
@@ -177,27 +144,15 @@ export default function ReviewPage() {
 
   // ── Edit handler ──────────────────────────────────────────────────────────
   const handleEdit = useCallback((key: string, value: string) => {
-    setFields(prev =>
-      prev.map(f =>
-        f.key === key
-          ? { ...f, finalValue: value, isEdited: true }
-          : f
-      )
-    );
+    setFields(prev => prev.map(f => f.key === key ? { ...f, finalValue: value, isEdited: true } : f));
   }, []);
 
-  // ── Submit to loan engine ─────────────────────────────────────────────────
+  // ── Submit ────────────────────────────────────────────────────────────────
   const handleSubmit = useCallback(async () => {
     setSubmitError(null);
     setPhase('submitting');
-
     const sid = storedSessionId || sessionId;
-    if (!sid) {
-      setSubmitError('Session ID missing. Please restart the interview.');
-      setPhase('review');
-      return;
-    }
-
+    if (!sid) { setSubmitError('Session ID missing. Please restart.'); setPhase('review'); return; }
     try {
       const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
       const res = await fetch(`${API_URL}/sessions/${sid}/submit-review`, {
@@ -206,23 +161,21 @@ export default function ReviewPage() {
         credentials: 'include',
         body: JSON.stringify({ extractedFields: fields }),
       });
-
       if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'Submission failed. Please try again.');
+        const err = await res.json() as { error?: string };
+        throw new Error(err.error || 'Submission failed.');
       }
-
-      const result = await res.json();
-      setLoanDecision(result.loanDecision);
       setPhase('decision');
-    } catch (err: any) {
-      console.error('[ReviewPage] Submit error:', err);
-      setSubmitError(err.message || 'An unexpected error occurred.');
+    } catch (err: unknown) {
+      setSubmitError(err instanceof Error ? err.message : 'An unexpected error occurred.');
       setPhase('review');
     }
   }, [fields, storedSessionId, sessionId]);
 
-  // ── Derived state ─────────────────────────────────────────────────────────
+  // ── Download PDF ──────────────────────────────────────────────────────────
+  const handleDownload = () => { window.print(); };
+
+  // ── Derived ───────────────────────────────────────────────────────────────
   const fieldsBySection = {
     personal:  fields.filter(f => f.section === 'personal'),
     financial: fields.filter(f => f.section === 'financial'),
@@ -230,56 +183,77 @@ export default function ReviewPage() {
   };
   const editedCount  = fields.filter(f => f.isEdited).length;
   const flaggedCount = fields.filter(f => f.isFlagged).length;
+  const today = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' });
+  const refNo = storedSessionId ? storedSessionId.slice(-8).toUpperCase() : 'PENDING';
 
   // ─────────────────────────────────────────────────────────────────────────
-  // PHASE: Submitting (loading overlay)
+  // SUBMITTING
   // ─────────────────────────────────────────────────────────────────────────
   if (phase === 'submitting') {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[70vh] gap-6 animate-fade-in">
-        <div className="relative w-20 h-20">
-          <div className="absolute inset-0 rounded-full border-4 border-blue-500/20" />
-          <div className="absolute inset-0 rounded-full border-4 border-transparent border-t-blue-500 animate-spin" />
-          <div className="absolute inset-0 flex items-center justify-center text-2xl">🏦</div>
+      <div style={{
+        minHeight: '100vh', background: '#080B14',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontFamily: 'var(--font-family)',
+      }}>
+        <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1.5rem' }}>
+          <div style={{ position: 'relative', width: '72px', height: '72px' }}>
+            <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '3px solid rgba(59,130,246,0.15)' }} />
+            <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '3px solid transparent', borderTopColor: '#3B82F6', animation: 'spin 0.9s linear infinite' }} />
+            <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.5rem' }}>🏦</div>
+          </div>
+          <div>
+            <h2 style={{ fontSize: '1.25rem', fontWeight: '800', color: 'var(--color-text-primary)', marginBottom: '0.5rem' }}>Processing Application</h2>
+            <p style={{ fontSize: '0.875rem', color: 'rgba(255,255,255,0.45)' }}>Running AI loan evaluation…</p>
+          </div>
         </div>
-        <div className="text-center">
-          <h2 className="text-xl font-bold text-white mb-2">Processing Your Application</h2>
-          <p className="text-white/50 text-sm">Our AI loan engine is evaluating your profile...</p>
-        </div>
-        <div className="flex gap-1.5">
-          {[0, 1, 2].map(i => (
-            <div
-              key={i}
-              className="w-2 h-2 rounded-full bg-blue-500 animate-bounce"
-              style={{ animationDelay: `${i * 0.15}s` }}
-            />
-          ))}
-        </div>
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       </div>
     );
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // PHASE: Success result
+  // SUCCESS
   // ─────────────────────────────────────────────────────────────────────────
   if (phase === 'decision') {
     return (
-      <div className="max-w-xl mx-auto px-4 py-20 animate-fade-in text-center">
-        <div className="text-7xl mb-6">✅</div>
-        <h1 className="text-3xl font-black text-white mb-4">Application Submitted!</h1>
-        <p className="text-white/60 mb-8">
-          Your loan application has been successfully submitted and is currently under review by our Loan Officers. We will contact you with an update shortly.
-        </p>
-        <div className="flex justify-center gap-4">
+      <div style={{
+        minHeight: '100vh', background: '#080B14',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontFamily: 'var(--font-family)', padding: '2rem',
+      }}>
+        {/* ambient glow */}
+        <div style={{ position: 'fixed', top: '-20%', right: '-10%', width: '500px', height: '500px', background: 'radial-gradient(circle, rgba(16,185,129,0.12) 0%, transparent 65%)', pointerEvents: 'none', zIndex: 0 }} />
+        <div style={{ position: 'relative', zIndex: 1, textAlign: 'center', maxWidth: '480px' }}>
+          <div style={{
+            width: '80px', height: '80px', borderRadius: '50%', margin: '0 auto 1.5rem',
+            background: 'linear-gradient(135deg, rgba(16,185,129,0.2), rgba(59,130,246,0.15))',
+            border: '2px solid rgba(16,185,129,0.4)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2.25rem',
+            boxShadow: '0 0 40px rgba(16,185,129,0.2)',
+          }}>✅</div>
+          <h1 style={{ fontSize: '1.75rem', fontWeight: '800', color: 'var(--color-text-primary)', letterSpacing: '-0.5px', marginBottom: '0.75rem' }}>
+            Application Submitted!
+          </h1>
+          <p style={{ fontSize: '0.9375rem', color: 'rgba(255,255,255,0.55)', lineHeight: 1.7, marginBottom: '2rem' }}>
+            Your loan application is under review by our Loan Officers. We will contact you with an update shortly.
+          </p>
+          {/* Reference chip */}
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', marginBottom: '2rem', padding: '8px 16px', borderRadius: '10px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.09)' }}>
+            <span style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.4)', fontWeight: '600' }}>Reference</span>
+            <span style={{ fontSize: '0.875rem', fontFamily: 'monospace', color: 'var(--color-accent-blue)', fontWeight: '700' }}>#{refNo}</span>
+          </div>
+          <br />
           <button
-            className="btn-primary"
-            onClick={() => {
-              sessionStorage.removeItem('kycReviewData');
-              reset();
-              router.push('/');
+            style={{
+              padding: '12px 28px', borderRadius: '11px',
+              background: 'linear-gradient(135deg, #1d4ed8, #3b82f6)',
+              color: 'white', fontSize: '0.9375rem', fontWeight: '700', border: 'none', cursor: 'pointer',
+              boxShadow: '0 4px 20px rgba(59,130,246,0.3)',
             }}
+            onClick={() => { sessionStorage.removeItem('kycReviewData'); reset(); router.push('/'); }}
           >
-            Return to Home
+            Return to Home →
           </button>
         </div>
       </div>
@@ -287,101 +261,213 @@ export default function ReviewPage() {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // PHASE: Review — editable form
+  // REVIEW — PDF Document
   // ─────────────────────────────────────────────────────────────────────────
   if (fields.length === 0) {
     return (
-      <div className="flex items-center justify-center min-h-[60vh]">
-        <div className="text-white/40 text-sm animate-pulse">Loading your results...</div>
+      <div style={{ minHeight: '100vh', background: '#080B14', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--font-family)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', color: 'rgba(255,255,255,0.4)' }}>
+          <div style={{ width: '16px', height: '16px', borderRadius: '50%', border: '2px solid rgba(255,255,255,0.1)', borderTop: '2px solid #3B82F6', animation: 'spin 0.8s linear infinite' }} />
+          <span style={{ fontSize: '0.875rem' }}>Loading your application…</span>
+        </div>
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       </div>
     );
   }
 
   return (
-    <div className="max-w-5xl mx-auto px-4 py-8 animate-fade-in">
+    <div className="pdf-print-root pdf-outer">
 
-      {/* Header */}
-      <div className="text-center mb-8">
-        <h1 className="text-3xl font-bold text-gradient mb-2">Review Your Application</h1>
-        <p className="text-white/50 text-sm max-w-xl mx-auto">
-          Your interview has been processed. Review the information below — hover any field to edit it.
-          Once you&apos;re happy, confirm to run the loan evaluation.
-        </p>
-      </div>
-
-      {/* Status bar */}
-      <div className="flex items-center justify-center gap-4 mb-8 flex-wrap">
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10 text-xs text-white/60">
-          <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse inline-block" />
-          {fields.length} fields extracted
+      {/* ── Action bar (hidden on print) ── */}
+      <div className="pdf-action-bar" style={{
+        position: 'relative', zIndex: 2,
+        maxWidth: '800px', margin: '0 auto 1.25rem',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        flexWrap: 'wrap', gap: '0.75rem',
+      }}>
+        {/* Left: stats */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '5px 12px', borderRadius: '20px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.09)', fontSize: '0.75rem', color: 'rgba(255,255,255,0.6)' }}>
+            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#10B981', display: 'inline-block' }} />
+            {fields.length} fields extracted
+          </div>
+          {flaggedCount > 0 && (
+            <div style={{ padding: '5px 12px', borderRadius: '20px', background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.3)', fontSize: '0.75rem', color: '#FCD34D' }}>
+              ⚠️ {flaggedCount} low-confidence field{flaggedCount > 1 ? 's' : ''}
+            </div>
+          )}
+          {editedCount > 0 && (
+            <div style={{ padding: '5px 12px', borderRadius: '20px', background: 'rgba(59,130,246,0.10)', border: '1px solid rgba(59,130,246,0.3)', fontSize: '0.75rem', color: '#60A5FA' }}>
+              ✏️ {editedCount} edited
+            </div>
+          )}
         </div>
-        {flaggedCount > 0 && (
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-amber-500/10 border border-amber-500/30 text-xs text-amber-300">
-            ⚠️ {flaggedCount} low-confidence field{flaggedCount > 1 ? 's' : ''}
-          </div>
-        )}
-        {editedCount > 0 && (
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-blue-500/10 border border-blue-500/30 text-xs text-blue-300">
-            ✏️ {editedCount} field{editedCount > 1 ? 's' : ''} edited
-          </div>
-        )}
+
+        {/* Right: Download */}
+        <button
+          onClick={handleDownload}
+          style={{
+            display: 'flex', alignItems: 'center', gap: '0.5rem',
+            padding: '8px 18px', borderRadius: '9px',
+            background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)',
+            color: 'rgba(255,255,255,0.75)', fontSize: '0.8125rem', fontWeight: '600', cursor: 'pointer',
+            transition: 'all 0.15s',
+          }}
+          onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.10)'; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.06)'; }}
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          Download PDF
+        </button>
       </div>
 
-      {/* Sections grid */}
-      <div className="space-y-8 mb-10">
-        {(Object.keys(SECTION_CONFIG) as Array<'personal' | 'financial' | 'loan'>).map(sec => {
-          const cfg = SECTION_CONFIG[sec];
-          const sectionFields = fieldsBySection[sec] || [];
-          if (sectionFields.length === 0) return null;
-          return (
-            <div key={sec}>
-              <div className={`flex items-center gap-2 mb-4 pb-2 border-b ${cfg.border}`}>
-                <span className="text-lg">{cfg.icon}</span>
-                <h2 className={`text-sm font-bold uppercase tracking-wider ${cfg.color}`}>{cfg.label}</h2>
-                <span className="ml-auto text-xs text-white/30">{sectionFields.length} fields</span>
+      {/* ── The paper document ── */}
+      <div className="pdf-document">
+
+        {/* Top gradient stripe */}
+        <div className="pdf-header-stripe" />
+
+        {/* Document header */}
+        <div className="pdf-body" style={{ paddingBottom: '1.5rem', borderBottom: '2px solid #e8edf8' }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
+            {/* Logo + title */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.875rem' }}>
+              <div style={{
+                width: '42px', height: '42px', borderRadius: '10px',
+                background: 'linear-gradient(135deg, #1d4ed8, #7c3aed)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+              }}>
+                <span style={{ color: 'white', fontWeight: '900', fontSize: '1.25rem', letterSpacing: '-1px' }}>A</span>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                {sectionFields.map(field => (
-                  <FieldCard key={field.key} field={field} onEdit={handleEdit} />
-                ))}
+              <div>
+                <div style={{ fontSize: '0.6875rem', fontWeight: '700', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: '3px' }}>
+                  Aria KYC System
+                </div>
+                <h1 style={{ fontSize: '1.3125rem', fontWeight: '800', color: '#0f172a', letterSpacing: '-0.4px', lineHeight: 1 }}>
+                  Personal Loan Application
+                </h1>
               </div>
             </div>
-          );
-        })}
+            {/* Meta info */}
+            <div style={{ textAlign: 'right', fontSize: '0.75rem', color: '#64748b', lineHeight: 1.9 }}>
+              <div style={{ fontWeight: '700', color: '#0f172a', fontFamily: 'monospace', letterSpacing: '0.02em' }}>
+                Ref: #{refNo}
+              </div>
+              <div>Date: {today}</div>
+              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '2px 10px', borderRadius: '20px', background: '#f1f5ff', border: '1px solid #c7d7fd', color: '#1d4ed8', fontWeight: '700', fontSize: '0.6rem', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+                ● AI Interview Verified
+              </div>
+            </div>
+          </div>
+          {/* Sub-title */}
+          <p style={{ marginTop: '1rem', fontSize: '0.8125rem', color: '#64748b', lineHeight: 1.6 }}>
+            The following information was extracted from your AI-assisted video interview with Aria.
+            Please review all fields carefully and correct any errors before submitting.
+            Fields marked <span style={{ color: '#b45309', fontWeight: '600' }}>LOW CONF</span> should be verified.
+          </p>
+        </div>
+
+        {/* ── Sections ── */}
+        <div className="pdf-body" style={{ paddingTop: '1.75rem', paddingBottom: '2rem' }}>
+          {(Object.keys(SECTION_CONFIG) as Array<'personal' | 'financial' | 'loan'>).map((sec, secIdx) => {
+            const cfg = SECTION_CONFIG[sec];
+            const sectionFields = fieldsBySection[sec];
+            if (sectionFields.length === 0) return null;
+            return (
+              <div key={sec} style={{ marginBottom: secIdx < 2 ? '2rem' : 0 }}>
+                {/* Section header */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.625rem', marginBottom: '0.75rem' }}>
+                  <div style={{
+                    width: '4px', height: '18px', borderRadius: '2px',
+                    background: cfg.accentColor, flexShrink: 0
+                  }} />
+                  <span style={{ fontSize: '1rem' }}>{cfg.icon}</span>
+                  <h2 className="pdf-section-title" style={{ flex: 1, color: cfg.accentColor }}>
+                    {cfg.label}
+                  </h2>
+                  <span style={{ fontSize: '0.6875rem', color: '#94a3b8', fontWeight: '600' }}>
+                    {sectionFields.length} fields
+                  </span>
+                </div>
+                {/* Field rows */}
+                <div>
+                  {sectionFields.map(field => (
+                    <FieldRow key={field.key} field={field} onEdit={handleEdit} />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* ── Document footer ── */}
+        <div className="pdf-footer">
+          <span style={{ fontSize: '0.6875rem', color: '#94a3b8' }}>
+            Generated by Aria KYC System · Confidential
+          </span>
+          <span style={{ fontSize: '0.6875rem', color: '#94a3b8' }}>
+            {fields.length} fields · {editedCount > 0 ? `${editedCount} edited` : 'No edits'}
+          </span>
+        </div>
       </div>
 
-      {/* Error */}
+      {/* ── Error ── */}
       {submitError && (
-        <div className="mb-6 p-4 rounded-xl bg-red-500/10 border border-red-500/30 text-red-300 text-sm flex items-center gap-3">
-          <span className="text-xl shrink-0">⚠️</span>
-          <span>{submitError}</span>
+        <div style={{
+          maxWidth: '800px', margin: '1rem auto 0',
+          padding: '12px 16px', borderRadius: '10px',
+          background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.25)',
+          color: '#FCA5A5', fontSize: '0.875rem', display: 'flex', alignItems: 'center', gap: '0.75rem',
+        }}>
+          <span style={{ fontSize: '1.125rem', flexShrink: 0 }}>⚠️</span>
+          {submitError}
         </div>
       )}
 
-      {/* Action buttons */}
-      <div className="flex flex-col sm:flex-row gap-4 justify-center">
+      {/* ── Action buttons (hidden on print) ── */}
+      <div className="pdf-action-bar" style={{
+        maxWidth: '800px', margin: '1.25rem auto 0',
+        display: 'flex', gap: '0.75rem', justifyContent: 'flex-end', flexWrap: 'wrap',
+      }}>
         <button
-          className="btn-primary bg-white/10 hover:bg-white/20 text-white text-sm border border-white/20"
-          onClick={() => {
-            sessionStorage.removeItem('kycReviewData');
-            reset();
-            router.push('/');
+          onClick={() => { sessionStorage.removeItem('kycReviewData'); reset(); router.push('/'); }}
+          style={{
+            padding: '11px 22px', borderRadius: '10px',
+            background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)',
+            color: 'rgba(255,255,255,0.6)', fontSize: '0.875rem', fontWeight: '600', cursor: 'pointer',
+            transition: 'all 0.15s',
           }}
+          onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.color = '#fff'}
+          onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.color = 'rgba(255,255,255,0.6)'}
         >
           ✕ Cancel
         </button>
         <button
           id="confirm-submit-btn"
-          className="btn-primary text-sm flex items-center justify-center gap-2 relative overflow-hidden group"
           onClick={handleSubmit}
+          style={{
+            padding: '11px 28px', borderRadius: '10px',
+            background: 'linear-gradient(135deg, #1d4ed8, #2563eb)',
+            color: 'white', fontSize: '0.875rem', fontWeight: '700',
+            border: 'none', cursor: 'pointer',
+            boxShadow: '0 4px 20px rgba(29,78,216,0.35)',
+            display: 'flex', alignItems: 'center', gap: '0.5rem',
+            transition: 'box-shadow 0.2s',
+          }}
+          onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.boxShadow = '0 4px 28px rgba(29,78,216,0.5)'}
+          onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.boxShadow = '0 4px 20px rgba(29,78,216,0.35)'}
         >
-          <span className="relative z-10">✅ Confirm & Submit Application</span>
-          <div className="absolute inset-0 bg-gradient-to-r from-blue-600 to-violet-600 opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="20 6 9 17 4 12"/>
+          </svg>
+          Confirm &amp; Submit Application
         </button>
       </div>
 
-      <p className="text-center text-white/25 text-xs mt-4">
-        All edits are saved locally. Submitting will trigger the loan evaluation engine.
+      <p style={{ textAlign: 'center', color: 'rgba(255,255,255,0.2)', fontSize: '0.6875rem', marginTop: '1.5rem', position: 'relative', zIndex: 1 }}>
+        All edits are saved locally · Submitting triggers the loan evaluation engine
       </p>
     </div>
   );

@@ -19,165 +19,327 @@ interface Application {
   };
 }
 
+/* ─── Helpers ─────────────────────────────────────────────────── */
+function timeAgo(dateStr: string) {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const isPending = status === 'submitted' || status === 'under_review';
+  const map: Record<string, { label: string; color: string; bg: string; border: string }> = {
+    submitted:    { label: 'In Review', color: '#F59E0B', bg: 'rgba(245,158,11,0.10)', border: 'rgba(245,158,11,0.25)' },
+    under_review: { label: 'In Review', color: '#F59E0B', bg: 'rgba(245,158,11,0.10)', border: 'rgba(245,158,11,0.25)' },
+    approved:     { label: 'Approved',  color: '#10B981', bg: 'rgba(16,185,129,0.10)',  border: 'rgba(16,185,129,0.25)'  },
+    rejected:     { label: 'Rejected',  color: '#EF4444', bg: 'rgba(239,68,68,0.10)',   border: 'rgba(239,68,68,0.25)'   },
+    conditional:  { label: 'Conditional',color: '#3B82F6', bg: 'rgba(59,130,246,0.10)', border: 'rgba(59,130,246,0.25)'  },
+  };
+  const s = map[status] ?? { label: status, color: '#94A3B8', bg: 'rgba(148,163,184,0.10)', border: 'rgba(148,163,184,0.20)' };
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: '5px',
+      padding: '3px 9px', borderRadius: '6px',
+      background: s.bg, color: s.color, border: `1px solid ${s.border}`,
+      fontSize: '0.75rem', fontWeight: '600', whiteSpace: 'nowrap'
+    }}>
+      <span className={isPending ? 'status-dot-pulse' : ''} style={{
+        width: '6px', height: '6px', borderRadius: '50%', background: s.color, flexShrink: 0
+      }} />
+      {s.label}
+    </span>
+  );
+}
+
+function StatCard({
+  label, value, icon, colorVar, glowClass, delay
+}: {
+  label: string; value: number; icon: React.ReactNode;
+  colorVar: string; glowClass: string; delay: string;
+}) {
+  return (
+    <div className={`admin-glass panel-in ${glowClass}`} style={{
+      animationDelay: delay, opacity: 0,
+      padding: '1.25rem 1.5rem',
+      display: 'flex', alignItems: 'center', gap: '1rem',
+      flex: '1', minWidth: '160px',
+      transition: 'transform 0.2s ease, box-shadow 0.2s ease',
+    }}
+      onMouseEnter={e => (e.currentTarget.style.transform = 'translateY(-2px)')}
+      onMouseLeave={e => (e.currentTarget.style.transform = 'translateY(0)')}
+    >
+      <div style={{
+        width: '40px', height: '40px', borderRadius: '10px',
+        background: `color-mix(in srgb, ${colorVar} 12%, transparent)`,
+        border: `1px solid color-mix(in srgb, ${colorVar} 25%, transparent)`,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        flexShrink: 0, color: colorVar,
+      }}>
+        {icon}
+      </div>
+      <div>
+        <div style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)', fontWeight: '500', marginBottom: '3px' }}>{label}</div>
+        <div style={{ fontSize: '1.625rem', fontWeight: '700', color: 'var(--color-text-primary)', lineHeight: 1 }}>{value}</div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Skeleton ──────────────────────────────────────────────────── */
+function TableSkeleton() {
+  return (
+    <div style={{ padding: '0.75rem' }}>
+      {[1,2,3,4].map(i => (
+        <div key={i} className="skeleton" style={{ height: '52px', marginBottom: '8px', borderRadius: '10px' }} />
+      ))}
+    </div>
+  );
+}
+
+/* ─── Page ──────────────────────────────────────────────────────── */
 export default function AdminDashboardPage() {
   const { getToken, isLoaded, isSignedIn } = useAuth();
   const router = useRouter();
   const [applications, setApplications] = useState<Application[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [filter, setFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
 
   useEffect(() => {
     if (!isLoaded) return;
-    if (!isSignedIn) {
-      router.push('/sign-in?redirect_url=/admin');
-      return;
-    }
+    if (!isSignedIn) { router.push('/sign-in?redirect_url=/admin'); return; }
 
     const fetchApplications = async () => {
       try {
         const token = await getToken();
         const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
-        
         const res = await fetch(`${API_URL}/admin/applications`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
-
         if (!res.ok) {
-          if (res.status === 403) {
-            router.push('/officer-signup'); // Not an officer
-            return;
-          }
+          if (res.status === 403) { router.push('/officer-signup'); return; }
           throw new Error('Failed to fetch applications');
         }
-
         const data = await res.json();
         setApplications(data.applications || []);
-      } catch (err: any) {
-        setError(err.message || 'An error occurred');
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : 'An error occurred');
       } finally {
         setLoading(false);
       }
     };
-
     fetchApplications();
   }, [isLoaded, isSignedIn, getToken, router]);
 
-  const getStatusBadge = (status: string) => {
-    switch(status) {
-      case 'submitted':
-      case 'under_review':
-        return <span className="inline-flex items-center px-2 py-1 rounded-md bg-amber-500/10 text-amber-500 text-xs font-medium ring-1 ring-inset ring-amber-500/20">Review</span>;
-      case 'approved':
-        return <span className="inline-flex items-center px-2 py-1 rounded-md bg-emerald-500/10 text-emerald-500 text-xs font-medium ring-1 ring-inset ring-emerald-500/20">Approved</span>;
-      case 'rejected':
-        return <span className="inline-flex items-center px-2 py-1 rounded-md bg-red-500/10 text-red-500 text-xs font-medium ring-1 ring-inset ring-red-500/20">Rejected</span>;
-      case 'conditional':
-        return <span className="inline-flex items-center px-2 py-1 rounded-md bg-blue-500/10 text-blue-500 text-xs font-medium ring-1 ring-inset ring-blue-500/20">Conditional</span>;
-      default:
-        return <span className="inline-flex items-center px-2 py-1 rounded-md bg-zinc-500/10 text-zinc-400 text-xs font-medium ring-1 ring-inset ring-zinc-500/20">{status}</span>;
-    }
-  };
+  const total     = applications.length;
+  const pending   = applications.filter(a => a.status === 'under_review' || a.status === 'submitted').length;
+  const approved  = applications.filter(a => a.status === 'approved').length;
+  const rejected  = applications.filter(a => a.status === 'rejected').length;
 
-  if (loading || !isLoaded) {
-    return (
-      <div className="flex h-64 items-center justify-center">
-        <div className="flex items-center gap-2 text-zinc-500">
-          <div className="w-4 h-4 rounded-full border-2 border-zinc-700 border-t-zinc-400 animate-spin" />
-          <span className="text-sm font-medium">Loading applications...</span>
-        </div>
-      </div>
-    );
-  }
+  const filtered = applications.filter(a => {
+    if (filter === 'pending')  return a.status === 'under_review' || a.status === 'submitted';
+    if (filter === 'approved') return a.status === 'approved';
+    if (filter === 'rejected') return a.status === 'rejected';
+    return true;
+  });
 
-  if (error) {
-    return (
-      <div className="p-4 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
-        <span className="font-semibold">Error:</span> {error}
+  if (!isLoaded || loading) return (
+    <div style={{ animationDelay: '0.05s' }}>
+      {/* Header skeleton */}
+      <div className="skeleton" style={{ height: '32px', width: '200px', marginBottom: '8px' }} />
+      <div className="skeleton" style={{ height: '16px', width: '300px', marginBottom: '2rem' }} />
+      {/* Stat cards skeleton */}
+      <div style={{ display: 'flex', gap: '1rem', marginBottom: '2rem', flexWrap: 'wrap' }}>
+        {[1,2,3,4].map(i => <div key={i} className="skeleton" style={{ height: '80px', flex: '1', minWidth: '150px', borderRadius: '16px' }} />)}
       </div>
-    );
-  }
+      {/* Table skeleton */}
+      <div className="admin-glass" style={{ overflow: 'hidden' }}>
+        <TableSkeleton />
+      </div>
+    </div>
+  );
+
+  if (error) return (
+    <div style={{ padding: '1rem', borderRadius: '12px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', color: '#EF4444', fontSize: '0.875rem' }}>
+      <strong>Error: </strong>{error}
+    </div>
+  );
 
   return (
-    <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 ease-out">
-      
-      {/* Header & Metrics */}
-      <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 mb-8">
-        <div>
-          <h1 className="text-2xl font-semibold text-zinc-100 tracking-tight mb-1">Applications</h1>
-          <p className="text-zinc-500 text-sm">Review and manage pending KYC applications.</p>
-        </div>
-        
-        <div className="flex gap-4">
-          <div className="px-4 py-3 rounded-xl bg-[#09090b] border border-zinc-800 flex items-center gap-4 min-w-[140px]">
-            <div className="p-2 rounded-lg bg-zinc-800 text-zinc-300">
-              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-            </div>
-            <div className="flex flex-col">
-              <span className="text-xs text-zinc-500 font-medium">Total</span>
-              <span className="text-lg font-semibold text-zinc-100 leading-none mt-0.5">{applications.length}</span>
-            </div>
+    <div>
+      {/* ── Page header ── */}
+      <div className="panel-in" style={{ marginBottom: '2rem', opacity: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
+          <div>
+            <h1 style={{ fontSize: '1.625rem', fontWeight: '700', color: 'var(--color-text-primary)', letterSpacing: '-0.4px', marginBottom: '4px' }}>
+              Applications
+            </h1>
+            <p style={{ fontSize: '0.875rem', color: 'var(--color-text-secondary)' }}>
+              Review and manage KYC applications from borrowers.
+            </p>
           </div>
-          
-          <div className="px-4 py-3 rounded-xl bg-[#09090b] border border-zinc-800 flex items-center gap-4 min-w-[140px]">
-            <div className="p-2 rounded-lg bg-amber-500/10 text-amber-500">
-              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-            </div>
-            <div className="flex flex-col">
-              <span className="text-xs text-zinc-500 font-medium">Pending</span>
-              <span className="text-lg font-semibold text-zinc-100 leading-none mt-0.5">
-                {applications.filter(a => a.status === 'under_review' || a.status === 'submitted').length}
-              </span>
-            </div>
+          <div style={{
+            fontSize: '0.75rem', fontWeight: '500', color: 'var(--color-text-secondary)',
+            padding: '6px 12px', borderRadius: '8px',
+            background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)'
+          }}>
+            {new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
           </div>
         </div>
       </div>
 
-      {/* Data Table */}
-      <div className="rounded-xl border border-zinc-800 bg-[#09090b] overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm whitespace-nowrap">
-            <thead className="bg-zinc-900/50 border-b border-zinc-800">
-              <tr>
-                <th className="px-4 py-3 font-medium text-zinc-400">Reference</th>
-                <th className="px-4 py-3 font-medium text-zinc-400">Applicant</th>
-                <th className="px-4 py-3 font-medium text-zinc-400">Type</th>
-                <th className="px-4 py-3 font-medium text-zinc-400">Amount</th>
-                <th className="px-4 py-3 font-medium text-zinc-400">Date</th>
-                <th className="px-4 py-3 font-medium text-zinc-400">Status</th>
-                <th className="px-4 py-3 font-medium text-zinc-400 text-right">Action</th>
+      {/* ── Stat cards ── */}
+      <div style={{ display: 'flex', gap: '1rem', marginBottom: '2rem', flexWrap: 'wrap' }}>
+        <StatCard label="Total" value={total} glowClass="stat-glow-blue" colorVar="#3B82F6" delay="0.05s" icon={
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+        }/>
+        <StatCard label="Pending" value={pending} glowClass="stat-glow-amber" colorVar="#F59E0B" delay="0.10s" icon={
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        }/>
+        <StatCard label="Approved" value={approved} glowClass="stat-glow-green" colorVar="#10B981" delay="0.15s" icon={
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+        }/>
+        <StatCard label="Rejected" value={rejected} glowClass="stat-glow-red" colorVar="#EF4444" delay="0.20s" icon={
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+        }/>
+      </div>
+
+      {/* ── Table card ── */}
+      <div className="admin-glass panel-in panel-in-4" style={{ overflow: 'hidden' }}>
+
+        {/* Table header with filters */}
+        <div style={{
+          padding: '1rem 1.25rem',
+          borderBottom: '1px solid rgba(255,255,255,0.06)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          gap: '1rem', flexWrap: 'wrap',
+          background: 'rgba(255,255,255,0.02)'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent-blue)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+            </svg>
+            <span style={{ fontSize: '0.875rem', fontWeight: '600', color: 'var(--color-text-primary)' }}>All Applications</span>
+            <span style={{
+              fontSize: '0.7rem', fontWeight: '700', padding: '1px 7px', borderRadius: '20px',
+              background: 'rgba(59,130,246,0.12)', color: 'var(--color-accent-blue)',
+              border: '1px solid rgba(59,130,246,0.25)'
+            }}>{filtered.length}</span>
+          </div>
+          {/* Filter pills */}
+          <div style={{ display: 'flex', gap: '0.375rem' }}>
+            {(['all', 'pending', 'approved', 'rejected'] as const).map(f => (
+              <button key={f} onClick={() => setFilter(f)} style={{
+                padding: '5px 12px', borderRadius: '7px', fontSize: '0.75rem', fontWeight: '500',
+                cursor: 'pointer', border: '1px solid',
+                background:   filter === f ? 'rgba(59,130,246,0.12)' : 'transparent',
+                color:        filter === f ? 'var(--color-accent-blue)' : 'var(--color-text-secondary)',
+                borderColor:  filter === f ? 'rgba(59,130,246,0.3)'    : 'rgba(255,255,255,0.07)',
+                transition: 'all 0.15s ease', textTransform: 'capitalize'
+              }}>
+                {f}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Table */}
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.8125rem', whiteSpace: 'nowrap' }}>
+            <thead>
+              <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                {['Reference', 'Applicant', 'Loan Type', 'Amount', 'Submitted', 'Status', ''].map((h, i) => (
+                  <th key={i} style={{
+                    padding: '0.75rem 1rem', fontSize: '0.7rem', fontWeight: '600',
+                    color: 'var(--color-text-secondary)', textTransform: 'uppercase', letterSpacing: '0.06em',
+                    textAlign: i === 6 ? 'right' : 'left'
+                  }}>{h}</th>
+                ))}
               </tr>
             </thead>
-            <tbody className="divide-y divide-zinc-800">
-              {applications.length === 0 ? (
+            <tbody>
+              {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-8 text-center text-zinc-500">
-                    No applications found.
+                  <td colSpan={7} style={{ padding: '4rem', textAlign: 'center' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem' }}>
+                      <div style={{
+                        width: '48px', height: '48px', borderRadius: '14px',
+                        background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        color: 'var(--color-text-secondary)'
+                      }}>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+                        </svg>
+                      </div>
+                      <p style={{ color: 'var(--color-text-secondary)', fontSize: '0.875rem' }}>No applications found.</p>
+                    </div>
                   </td>
                 </tr>
               ) : (
-                applications.map((app) => (
-                  <tr key={app._id} className="hover:bg-zinc-800/30 transition-colors group">
-                    <td className="px-4 py-3 font-medium text-zinc-300">{app.referenceNumber}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex flex-col">
-                        <span className="text-zinc-200">{app.userId?.name || 'Unknown'}</span>
-                        <span className="text-xs text-zinc-500">{app.userId?.email || 'N/A'}</span>
+                filtered.map((app) => (
+                  <tr key={app._id} className="admin-table-row" style={{ borderBottom: '1px solid rgba(255,255,255,0.04)', cursor: 'pointer' }}>
+                    <td style={{ padding: '0.875rem 1rem' }}>
+                      <span style={{ fontFamily: 'monospace', fontSize: '0.75rem', color: 'var(--color-accent-blue)', fontWeight: '600' }}>
+                        #{app.referenceNumber}
+                      </span>
+                    </td>
+                    <td style={{ padding: '0.875rem 1rem' }}>
+                      <div>
+                        <div style={{ fontWeight: '500', color: 'var(--color-text-primary)', marginBottom: '2px' }}>
+                          {app.userId?.name || 'Unknown'}
+                        </div>
+                        <div style={{ fontSize: '0.7rem', color: 'var(--color-text-secondary)' }}>
+                          {app.userId?.email || 'N/A'}
+                        </div>
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-zinc-400 capitalize">{app.loanType}</td>
-                    <td className="px-4 py-3 text-zinc-300 font-medium">
-                      {app.loanAmount ? `$${app.loanAmount.toLocaleString()}` : '-'}
+                    <td style={{ padding: '0.875rem 1rem' }}>
+                      <span style={{
+                        padding: '3px 8px', borderRadius: '6px', fontSize: '0.7rem', fontWeight: '600',
+                        background: 'rgba(139,92,246,0.10)', color: '#A78BFA',
+                        border: '1px solid rgba(139,92,246,0.20)', textTransform: 'capitalize'
+                      }}>
+                        {app.loanType}
+                      </span>
                     </td>
-                    <td className="px-4 py-3 text-zinc-400">
-                      {new Date(app.createdAt).toLocaleDateString()}
+                    <td style={{ padding: '0.875rem 1rem', fontWeight: '600', color: 'var(--color-text-primary)' }}>
+                      {app.loanAmount ? `$${app.loanAmount.toLocaleString()}` : <span style={{ color: 'var(--color-text-secondary)' }}>—</span>}
                     </td>
-                    <td className="px-4 py-3">{getStatusBadge(app.status)}</td>
-                    <td className="px-4 py-3 text-right">
-                      <Link 
+                    <td style={{ padding: '0.875rem 1rem' }}>
+                      <div>
+                        <div style={{ color: 'var(--color-text-primary)', fontSize: '0.8rem' }}>
+                          {new Date(app.createdAt).toLocaleDateString()}
+                        </div>
+                        <div style={{ color: 'var(--color-text-secondary)', fontSize: '0.7rem' }}>
+                          {timeAgo(app.createdAt)}
+                        </div>
+                      </div>
+                    </td>
+                    <td style={{ padding: '0.875rem 1rem' }}>
+                      <StatusBadge status={app.status} />
+                    </td>
+                    <td style={{ padding: '0.875rem 1rem', textAlign: 'right' }}>
+                      <Link
                         href={`/admin/applications/${app._id}`}
-                        className="inline-flex items-center justify-center px-3 py-1.5 rounded-md text-xs font-medium bg-zinc-800 text-zinc-300 hover:bg-zinc-700 hover:text-white transition-colors"
+                        style={{
+                          display: 'inline-flex', alignItems: 'center', gap: '0.375rem',
+                          padding: '5px 12px', borderRadius: '7px',
+                          fontSize: '0.75rem', fontWeight: '600',
+                          background: 'rgba(59,130,246,0.10)', color: 'var(--color-accent-blue)',
+                          border: '1px solid rgba(59,130,246,0.25)',
+                          textDecoration: 'none', transition: 'all 0.15s ease',
+                        }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLAnchorElement).style.background = 'rgba(59,130,246,0.18)'; (e.currentTarget as HTMLAnchorElement).style.borderColor = 'rgba(59,130,246,0.4)'; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLAnchorElement).style.background = 'rgba(59,130,246,0.10)'; (e.currentTarget as HTMLAnchorElement).style.borderColor = 'rgba(59,130,246,0.25)'; }}
                       >
                         Review
+                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="m9 18 6-6-6-6"/>
+                        </svg>
                       </Link>
                     </td>
                   </tr>

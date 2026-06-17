@@ -149,9 +149,9 @@ export const submitReview = async (req, res) => {
     const Application = (await import('../models/Application.model.js')).default;
     
     // Find the loan amount and tenure if they exist
-    const loanAmountField = extractedFields.find(f => f.key === 'loan_amount');
-    const tenureField = extractedFields.find(f => f.key === 'loan_tenure');
-    const purposeField = extractedFields.find(f => f.key === 'loan_purpose');
+    const loanAmountField = extractedFields.find(f => f.key === 'LOAN_AMOUNT');
+    const tenureField = extractedFields.find(f => f.key === 'LOAN_TENURE');
+    const purposeField = extractedFields.find(f => f.key === 'LOAN_PURPOSE');
 
     const newApplication = new Application({
       sessionId: session._id,

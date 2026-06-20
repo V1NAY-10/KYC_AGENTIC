@@ -7,6 +7,7 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { connectDB } from './src/config/db.js';
 import { registerSocketHandlers } from './src/websocket/socketHandler.js';
+import { setupAgentOrchestrator } from './src/orchestrator/AgentOrchestrator.js';
 import { geoCaptureMiddleware } from './src/middleware/geoCapture.middleware.js';
 import { clerkMiddleware } from '@clerk/express';
 
@@ -80,6 +81,9 @@ app.use((err, _req, res, _next) => {
 const PORT = process.env.PORT || 8000;
 
 connectDB().then(() => {
+  // Register all agent tools (PAN validator, EMI calc, fraud scorer, etc.)
+  setupAgentOrchestrator();
+
   httpServer.listen(PORT, () => {
     console.log(`🚀 Server running on http://localhost:${PORT}`);
     console.log(`🔌 Socket.IO ready`);

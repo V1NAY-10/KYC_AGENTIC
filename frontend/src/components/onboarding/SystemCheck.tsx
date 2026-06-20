@@ -177,7 +177,7 @@ export default function SystemCheck() {
             <button 
               className="btn-primary" 
               style={{ flex: 2, opacity: allClear ? 1 : 0.5, cursor: allClear ? 'pointer' : 'not-allowed' }}
-              onClick={() => { if (allClear) router.push('/onboard/consent'); }}
+              onClick={() => { if (allClear) router.push('/onboard/documents'); }}
               disabled={!allClear}
             >
               I'm Ready ➔

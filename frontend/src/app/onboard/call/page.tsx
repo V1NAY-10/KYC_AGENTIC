@@ -23,7 +23,6 @@ const CALL_STEPS = [
   { key: 'LOAN_AMOUNT',            label: 'Loan Amount',     icon: '🏦' },
   { key: 'LOAN_PURPOSE',           label: 'Loan Purpose',    icon: '🎯' },
   { key: 'LOAN_TENURE',            label: 'Loan Duration',   icon: '⏱' },
-  { key: 'DOCUMENT_VERIFY',        label: 'Documents',       icon: '📄' },
 ];
 
 interface AgentResponseData {

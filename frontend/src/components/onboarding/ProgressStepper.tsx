@@ -4,11 +4,12 @@ import { usePathname } from 'next/navigation';
 import React from 'react';
 
 const steps = [
-  { id: 'language', label: 'Language', path: '/onboard/language' },
-  { id: 'setup', label: 'System Check', path: '/onboard/setup' },
-  { id: 'consent', label: 'Consent', path: '/onboard/consent' },
-  { id: 'call', label: 'Video Call', path: '/onboard/call' },
-  { id: 'review', label: 'Review', path: '/onboard/review' },
+  { id: 'language',  label: 'Language',     path: '/onboard/language'  },
+  { id: 'setup',     label: 'System Check', path: '/onboard/setup'     },
+  { id: 'documents', label: 'Documents',    path: '/onboard/documents' },
+  { id: 'consent',   label: 'Consent',      path: '/onboard/consent'   },
+  { id: 'call',      label: 'Video Call',   path: '/onboard/call'      },
+  { id: 'review',    label: 'Review',       path: '/onboard/review'    },
 ];
 
 export default function ProgressStepper() {

@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { SignedIn, SignedOut, UserButton, SignOutButton } from '@clerk/nextjs';
 
 export default function LandingPage() {
   return (
@@ -20,8 +21,20 @@ export default function LandingPage() {
           <Link href="/admin" style={{ color: 'var(--color-accent-blue)', fontSize: '0.9rem', fontWeight: 600, paddingRight: '1rem', borderRight: '1px solid var(--color-border)' }}>
             Officer Portal
           </Link>
-          <Link href="/sign-in" style={{ color: 'var(--color-text-secondary)', padding: '0.5rem 1rem', fontWeight: 500 }}>Log in</Link>
-          <Link href="/sign-up" className="btn-primary">Get Started</Link>
+          <SignedOut>
+            <Link href="/sign-in" style={{ color: 'var(--color-text-secondary)', padding: '0.5rem 1rem', fontWeight: 500 }}>Log in</Link>
+            <Link href="/sign-up" className="btn-primary">Get Started</Link>
+          </SignedOut>
+          <SignedIn>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+              <SignOutButton>
+                <button style={{ background: 'none', border: 'none', color: 'var(--color-text-secondary)', fontWeight: 500, fontSize: '0.9rem', cursor: 'pointer' }}>
+                  Log out
+                </button>
+              </SignOutButton>
+              <UserButton afterSignOutUrl="/" />
+            </div>
+          </SignedIn>
         </div>
       </nav>
 

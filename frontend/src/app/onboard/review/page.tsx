@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAppStore } from '@/store/useAppStore';
 
@@ -119,6 +119,13 @@ function FieldRow({ field, onEdit }: { field: KYCField; onEdit: (key: string, va
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 type PagePhase = 'review' | 'submitting' | 'decision';
+type DocUploadStatus = 'idle' | 'uploading' | 'done' | 'error';
+
+interface DocState {
+  status: DocUploadStatus;
+  fileName: string | null;
+  error: string | null;
+}
 
 export default function ReviewPage() {
   const router = useRouter();
@@ -128,6 +135,35 @@ export default function ReviewPage() {
   const [storedSessionId, setStoredSessionId] = useState<string>('');
   const [phase, setPhase] = useState<PagePhase>('review');
   const [submitError, setSubmitError] = useState<string | null>(null);
+
+  // ── Document upload state ─────────────────────────────────────────────────
+  const [panDoc,    setPanDoc]    = useState<DocState>({ status: 'idle', fileName: null, error: null });
+  const [aadhaarDoc, setAadhaarDoc] = useState<DocState>({ status: 'idle', fileName: null, error: null });
+  const panInputRef    = useRef<HTMLInputElement>(null);
+  const aadhaarInputRef = useRef<HTMLInputElement>(null);
+
+  const uploadDoc = useCallback(async (file: File, type: 'pan' | 'aadhaar') => {
+    const setter = type === 'pan' ? setPanDoc : setAadhaarDoc;
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) {
+      setter({ status: 'error', fileName: null, error: 'File too large (max 5MB)' });
+      return;
+    }
+    setter({ status: 'uploading', fileName: file.name, error: null });
+    try {
+      const formData = new FormData();
+      formData.append('document', file);
+      formData.append('docType', type);
+      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
+      const res = await fetch(`${API_URL}/sessions/upload-document`, {
+        method: 'POST', body: formData, credentials: 'include',
+      });
+      if (!res.ok) { const e = await res.json() as { error?: string }; throw new Error(e.error || 'Upload failed'); }
+      setter({ status: 'done', fileName: file.name, error: null });
+    } catch (err: unknown) {
+      setter({ status: 'error', fileName: null, error: err instanceof Error ? err.message : 'Upload failed' });
+    }
+  }, []);
 
   // ── Load from sessionStorage ──────────────────────────────────────────────
   useEffect(() => {
@@ -369,6 +405,39 @@ export default function ReviewPage() {
           </p>
         </div>
 
+        {/* ── Document Upload Panel ── */}
+        <div className="pdf-body" style={{ paddingTop: '1.5rem', paddingBottom: '1.5rem', borderBottom: '2px solid #e8edf8' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.625rem', marginBottom: '1rem' }}>
+            <div style={{ width: '4px', height: '18px', borderRadius: '2px', background: '#0891b2', flexShrink: 0 }} />
+            <span style={{ fontSize: '1rem' }}>📎</span>
+            <h2 style={{ fontSize: '1rem', fontWeight: '700', color: '#0891b2', margin: 0 }}>Document Upload</h2>
+            <span style={{
+              marginLeft: '0.5rem', fontSize: '0.65rem', fontWeight: '700', color: '#0891b2',
+              background: '#e0f2fe', border: '1px solid #bae6fd', borderRadius: '4px',
+              padding: '1px 6px', textTransform: 'uppercase', letterSpacing: '0.05em',
+            }}>Optional</span>
+          </div>
+          <p style={{ fontSize: '0.8rem', color: '#64748b', marginBottom: '1rem', lineHeight: 1.5 }}>
+            Upload your PAN and Aadhaar documents for faster verification. These are optional — you can submit the form without them.
+          </p>
+          <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+            {/* PAN Upload */}
+            <DocUploadSlot
+              label="PAN Card" icon="💳" type="pan"
+              state={panDoc}
+              inputRef={panInputRef}
+              onChange={(f) => uploadDoc(f, 'pan')}
+            />
+            {/* Aadhaar Upload */}
+            <DocUploadSlot
+              label="Aadhaar Card" icon="🪪" type="aadhaar"
+              state={aadhaarDoc}
+              inputRef={aadhaarInputRef}
+              onChange={(f) => uploadDoc(f, 'aadhaar')}
+            />
+          </div>
+        </div>
+
         {/* ── Sections ── */}
         <div className="pdf-body" style={{ paddingTop: '1.75rem', paddingBottom: '2rem' }}>
           {(Object.keys(SECTION_CONFIG) as Array<'personal' | 'financial' | 'loan'>).map((sec, secIdx) => {
@@ -469,6 +538,62 @@ export default function ReviewPage() {
       <p style={{ textAlign: 'center', color: 'rgba(255,255,255,0.2)', fontSize: '0.6875rem', marginTop: '1.5rem', position: 'relative', zIndex: 1 }}>
         All edits are saved locally · Submitting triggers the loan evaluation engine
       </p>
+    </div>
+  );
+}
+
+// ─── DocUploadSlot — compact upload button for the review page ────────────────
+
+interface DocUploadSlotProps {
+  label: string;
+  icon: string;
+  type: 'pan' | 'aadhaar';
+  state: { status: 'idle' | 'uploading' | 'done' | 'error'; fileName: string | null; error: string | null };
+  inputRef: React.RefObject<HTMLInputElement>;
+  onChange: (file: File) => void;
+}
+
+function DocUploadSlot({ label, icon, type, state, inputRef, onChange }: DocUploadSlotProps) {
+  const isDone      = state.status === 'done';
+  const isUploading = state.status === 'uploading';
+  const isError     = state.status === 'error';
+
+  const borderColor = isDone ? '#86efac' : isError ? '#fca5a5' : '#cbd5e1';
+  const bgColor     = isDone ? '#f0fdf4' : isError ? '#fff5f5' : '#f8fafc';
+
+  return (
+    <div style={{
+      flex: '1 1 200px', minWidth: '180px',
+      border: `1.5px dashed ${borderColor}`,
+      borderRadius: '10px', background: bgColor,
+      padding: '0.875rem 1rem',
+      display: 'flex', flexDirection: 'column', gap: '0.5rem',
+      cursor: isDone || isUploading ? 'default' : 'pointer',
+      transition: 'all 0.2s',
+    }}
+      onClick={() => { if (!isDone && !isUploading) inputRef.current?.click(); }}
+    >
+      <input
+        ref={inputRef} type="file"
+        accept="image/jpeg,image/png,image/webp,application/pdf"
+        style={{ display: 'none' }}
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) onChange(f); e.target.value = ''; }}
+      />
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+        <span style={{ fontSize: '1.25rem' }}>{isDone ? '✅' : isError ? '❌' : isUploading ? '⏳' : icon}</span>
+        <span style={{ fontSize: '0.875rem', fontWeight: '700', color: '#0f172a' }}>{label}</span>
+      </div>
+      {isDone ? (
+        <span style={{ fontSize: '0.75rem', color: '#16a34a', fontWeight: '600' }}>
+          ✓ {state.fileName}
+        </span>
+      ) : isUploading ? (
+        <span style={{ fontSize: '0.75rem', color: '#0891b2' }}>Uploading…</span>
+      ) : isError ? (
+        <span style={{ fontSize: '0.75rem', color: '#dc2626' }}>{state.error}</span>
+      ) : (
+        <span style={{ fontSize: '0.75rem', color: '#64748b' }}>Click to upload (JPG, PNG, PDF · max 5MB)</span>
+      )}
     </div>
   );
 }

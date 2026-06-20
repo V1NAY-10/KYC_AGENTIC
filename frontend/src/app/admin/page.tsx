@@ -307,7 +307,7 @@ export default function AdminDashboardPage() {
                       </span>
                     </td>
                     <td style={{ padding: '0.875rem 1rem', fontWeight: '600', color: 'var(--color-text-primary)' }}>
-                      {app.loanAmount ? `$${app.loanAmount.toLocaleString()}` : <span style={{ color: 'var(--color-text-secondary)' }}>—</span>}
+                      {app.loanAmount ? `₹${Number(app.loanAmount).toLocaleString('en-IN')}` : <span style={{ color: 'var(--color-text-secondary)' }}>—</span>}
                     </td>
                     <td style={{ padding: '0.875rem 1rem' }}>
                       <div>

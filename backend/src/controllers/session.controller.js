@@ -1,5 +1,6 @@
 import Session from '../models/Session.model.js';
 import User from '../models/User.model.js';
+import { getRedis } from '../config/redis.js';
 
 export const startSession = async (req, res) => {
   try {
@@ -13,7 +14,6 @@ export const startSession = async (req, res) => {
     // Find the user in our DB linked to this clerkId
     let user = await User.findOne({ clerkId });
     if (!user) {
-      // Create user on the fly if webhook hasn't synced (useful for local dev)
       user = await User.create({
         clerkId: clerkId,
         email: `${clerkId}@local.dev`,
@@ -22,31 +22,48 @@ export const startSession = async (req, res) => {
     }
 
     // Get geo data from middleware if available
-    const geoData = req.geoData || {};
+    const geoData   = req.geoData  || {};
     const ipAddress = req.clientIp || req.ip;
+
+    // ── Pull pre-uploaded docs from Redis ────────────────────────────────────
+    let preUploadedDocs = [];
+    try {
+      const redis = getRedis();
+      const redisKey    = `docs:${clerkId}`;
+      const cachedDocs  = await redis.get(redisKey);
+      if (cachedDocs) {
+        preUploadedDocs = JSON.parse(cachedDocs);
+        await redis.del(redisKey); // consume once
+        console.log(`[startSession] Attached ${preUploadedDocs.length} pre-uploaded doc(s) to new session`);
+      }
+    } catch (redisErr) {
+      console.warn('[startSession] Redis doc fetch failed (non-fatal):', redisErr.message);
+    }
 
     const newSession = new Session({
       userId: user._id,
       clerkId,
-      language: language || 'en',
-      loanType: loanType || 'personal',
-      status: 'active',
+      language:  language  || 'en',
+      loanType:  loanType  || 'personal',
+      status:    'active',
       agentState: 'GREETING',
       consentData: {
         ...consentData,
-        ip: ipAddress,
+        ip:          ipAddress,
         confirmedAt: new Date(),
       },
       ipAddress,
       geoData,
-      startTime: new Date()
+      startTime: new Date(),
+      documents: preUploadedDocs,  // attach pre-uploaded docs
     });
 
     await newSession.save();
 
     res.status(201).json({ 
-      message: 'Session started', 
-      sessionId: newSession._id 
+      message:   'Session started', 
+      sessionId: newSession._id,
+      docsAttached: preUploadedDocs.length,
     });
 
   } catch (error) {
@@ -147,25 +164,32 @@ export const submitReview = async (req, res) => {
 
     // 3. Create Application Document for Loan Officer Portal
     const Application = (await import('../models/Application.model.js')).default;
-    
-    // Find the loan amount and tenure if they exist
-    const loanAmountField = extractedFields.find(f => f.key === 'LOAN_AMOUNT');
-    const tenureField = extractedFields.find(f => f.key === 'LOAN_TENURE');
-    const purposeField = extractedFields.find(f => f.key === 'LOAN_PURPOSE');
+
+    // ── Dual-key field lookup: handles both PlannerAgent camelCase keys
+    //    (e.g. loanAmount) and the extraction service SCREAMING_SNAKE keys
+    //    (e.g. LOAN_AMOUNT). This prevents blank dashes in the officer portal.
+    const findField = (...keys) => extractedFields.find(f => keys.includes(f.key));
+    const fieldValue = (field) => field ? (field.finalValue || field.aiExtractedValue || null) : null;
+
+    const loanAmountField = findField('LOAN_AMOUNT', 'loanAmount');
+    const tenureField     = findField('LOAN_TENURE',  'loanTenure', 'tenure');
+    const purposeField    = findField('LOAN_PURPOSE', 'loanPurpose', 'purpose');
+    const nameField       = findField('IDENTITY_NAME', 'fullName', 'name');
 
     const newApplication = new Application({
-      sessionId: session._id,
-      userId: session.userId,
-      loanType: session.loanType || 'personal',
-      status: 'under_review',
-      loanAmount: loanAmountField ? parseFloat(loanAmountField.finalValue || loanAmountField.aiExtractedValue) || null : null,
-      tenure: tenureField ? parseInt(tenureField.finalValue || tenureField.aiExtractedValue) || null : null,
-      purpose: purposeField ? purposeField.finalValue || purposeField.aiExtractedValue : null,
+      sessionId:  session._id,
+      userId:     session.userId,
+      loanType:   session.loanType || 'personal',
+      status:     'under_review',
+      loanAmount: parseFloat(fieldValue(loanAmountField)) || null,
+      tenure:     parseInt(fieldValue(tenureField))       || null,
+      purpose:    fieldValue(purposeField),
     });
     
     await newApplication.save();
     
     console.log(`📄 Application created for review: ${newApplication.referenceNumber}`);
+    console.log(`   Name: ${fieldValue(nameField)} | Amount: ₹${fieldValue(loanAmountField)} | Tenure: ${fieldValue(tenureField)}m`);
 
     // Do NOT return loan decision to client, just success.
     res.json({ 

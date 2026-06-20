@@ -7,6 +7,7 @@ import { DocumentAgent } from './DocumentAgent.js';
 import { ComplianceAgent } from './ComplianceAgent.js';
 import { DecisionAgent } from './DecisionAgent.js';
 import { detectPromptInjection } from '../middleware/promptInjectionGuard.js';
+import { generateInterviewSummary } from '../services/ai/interviewSummary.service.js';
 
 /**
  * PlannerAgent — The brain of the agentic KYC system.
@@ -410,6 +411,7 @@ DO NOT include "document" — document upload is handled separately after the ca
         agentState:       'CALL_COMPLETE',
         extractedAnswers: extractedFields,
         collectedAnswers: new Map(Object.entries(wm.collectedFields)),
+        fraudScore:       wm.fraudScore || 0,
       });
     } catch (err) {
       this.log('error', 'Failed to update session status', { sessionId, error: err.message });
@@ -436,11 +438,61 @@ DO NOT include "document" — document upload is handled separately after the ca
       sessionId, fields: allFieldKeys.length, fraud: wm.fraudScore,
     });
 
+    // ── Generate interview summary async (non-blocking) ───────────────────────
+    this._generateSummaryAsync(sessionId, session, wm).catch(err =>
+      this.log('error', 'Interview summary generation failed', { sessionId, error: err.message })
+    );
+
     return {
       question:   closingMessage,
       state:      'CALL_COMPLETE',
       stateLabel: 'Complete',
       isComplete: true,
     };
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // PRIVATE: Generate interview summary async (fires after call:complete)
+  // ════════════════════════════════════════════════════════════════════════════
+  async _generateSummaryAsync(sessionId, session, wm) {
+    // ── Read transcript directly from MongoDB Session.transcript[] ───────────
+    // (episodicMemory.getHistory() was returning 0 turns — transcript is stored
+    //  in Session.transcript[], not in a separate episodic store)
+    const Session = (await import('../models/Session.model.js')).default;
+    const sessionDoc = await Session.findById(sessionId).select('transcript startTime geoData').lean();
+
+    const turns = (sessionDoc?.transcript || []).map(t => ({
+      role:      t.role,
+      text:      t.text,
+      timestamp: t.timestamp,
+    }));
+
+    const durationSeconds = sessionDoc?.startTime
+      ? Math.round((Date.now() - new Date(sessionDoc.startTime).getTime()) / 1000)
+      : 0;
+
+    // Use real turn count from transcript if wm.turnCount is 0
+    const turnCount = wm.turnCount > 0 ? wm.turnCount : turns.length;
+
+    const summary = await generateInterviewSummary({
+      transcript:      turns,
+      collectedFields: wm.collectedFields,
+      confidenceMap:   wm.confidenceMap || {},
+      fraudSignals:    wm.fraudSignals  || [],
+      fraudScore:      wm.fraudScore    || 0,
+      geoData:         sessionDoc?.geoData || session.geoData || {},
+      turnCount,
+      durationSeconds,
+      language:        wm.language || 'en',
+    });
+
+    // Save to MongoDB
+    await Session.findByIdAndUpdate(sessionId, { interviewSummary: summary });
+    this.log('info', '📋 Interview summary saved', {
+      sessionId,
+      tone:   summary.overallTone,
+      turns:  turnCount,
+      duration: `${Math.round(durationSeconds / 60)}m`,
+    });
   }
 }

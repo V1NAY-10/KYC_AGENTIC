@@ -107,6 +107,23 @@ export default function DocumentUpload() {
         cloudUrl: res.data.url,
         error: null,
       });
+
+      // ── Persist to localStorage so the review page can display the doc ──────
+      try {
+        const existing = JSON.parse(localStorage.getItem('kyc_pre_docs') || '[]') as Array<{
+          docType: string; cloudUrl: string; preview: string | null; fileName: string;
+        }>;
+        const filtered = existing.filter(d => d.docType !== type); // replace same type
+        filtered.push({
+          docType:  type,
+          cloudUrl: res.data.url,
+          preview:  preview,   // null for PDFs, object URL for images
+          fileName: file.name,
+        });
+        localStorage.setItem('kyc_pre_docs', JSON.stringify(filtered));
+      } catch (_) {
+        // non-fatal — localStorage might be unavailable
+      }
     } catch (err: any) {
       const msg = err.response?.data?.error || 'Upload failed. Try again.';
       setSlot(type, { status: 'error', error: msg });

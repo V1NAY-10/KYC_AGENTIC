@@ -26,9 +26,10 @@ export default function SystemCheck() {
   useEffect(() => {
     runChecks();
     // Cleanup stream on unmount
+    const currentVideo = videoRef.current;
     return () => {
-      if (videoRef.current && videoRef.current.srcObject) {
-        const stream = videoRef.current.srcObject as MediaStream;
+      if (currentVideo && currentVideo.srcObject) {
+        const stream = currentVideo.srcObject as MediaStream;
         stream.getTracks().forEach(track => track.stop());
       }
     };
@@ -39,7 +40,8 @@ export default function SystemCheck() {
     
     // 1. Check Speech Recognition (Chrome/Edge only)
     setSpeechStatus('checking');
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    const win = window as unknown as { SpeechRecognition?: unknown; webkitSpeechRecognition?: unknown };
+    const SpeechRecognition = win.SpeechRecognition || win.webkitSpeechRecognition;
     if (!SpeechRecognition) {
       setSpeechStatus('error');
       setErrorMessage('Speech Recognition is not supported in this browser. Please use Google Chrome or Microsoft Edge.');
@@ -180,7 +182,7 @@ export default function SystemCheck() {
               onClick={() => { if (allClear) router.push('/onboard/documents'); }}
               disabled={!allClear}
             >
-              I'm Ready ➔
+              I&apos;m Ready ➔
             </button>
           </div>
         </div>

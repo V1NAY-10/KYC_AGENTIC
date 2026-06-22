@@ -50,7 +50,8 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ stream, 
 
     // Initialize Web Audio API
     if (!audioContextRef.current) {
-      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      audioContextRef.current = new AudioCtx();
     }
     const audioCtx = audioContextRef.current;
     if (audioCtx.state === 'suspended') {
@@ -81,7 +82,7 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ stream, 
 
     const draw = () => {
       animationRef.current = requestAnimationFrame(draw);
-      analyser.getByteTimeDomainData(dataArray as any);
+      analyser.getByteTimeDomainData(dataArray);
 
       ctx.fillStyle = 'rgba(0, 0, 0, 0.2)'; // slight trail effect
       ctx.fillRect(0, 0, canvas.width, canvas.height);

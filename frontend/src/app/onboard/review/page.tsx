@@ -143,7 +143,7 @@ export default function ReviewPage() {
     try {
       const raw = localStorage.getItem('kyc_pre_docs');
       if (raw) setPreDocs(JSON.parse(raw) as PreDoc[]);
-    } catch (_) {
+    } catch {
       // ignore
     }
   }, []);

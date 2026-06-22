@@ -49,9 +49,10 @@ export default function ConsentForm() {
       } else {
         throw new Error('Invalid response from server');
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err);
-      const errorMessage = err.response?.data?.error || 'Failed to start session. Please try again.';
+      const e = err as { response?: { data?: { error?: string } } };
+      const errorMessage = e.response?.data?.error || 'Failed to start session. Please try again.';
       setError(errorMessage);
       setLoading(false);
 

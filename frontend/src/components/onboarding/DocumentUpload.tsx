@@ -57,7 +57,6 @@ export default function DocumentUpload() {
 
   const [slots, setSlots] = useState<DocSlot[]>(INITIAL_SLOTS);
   const [dragOver, setDragOver] = useState<DocType | null>(null);
-  const [globalError, setGlobalError] = useState('');
 
   const fileInputRefs = useRef<Record<DocType, HTMLInputElement | null>>({
     pan: null,
@@ -121,11 +120,12 @@ export default function DocumentUpload() {
           fileName: file.name,
         });
         localStorage.setItem('kyc_pre_docs', JSON.stringify(filtered));
-      } catch (_) {
+      } catch {
         // non-fatal — localStorage might be unavailable
       }
-    } catch (err: any) {
-      const msg = err.response?.data?.error || 'Upload failed. Try again.';
+    } catch (err: unknown) {
+      const e = err as { response?: { data?: { error?: string } } };
+      const msg = e.response?.data?.error || 'Upload failed. Try again.';
       setSlot(type, { status: 'error', error: msg });
     }
   }, [getToken]);
@@ -217,16 +217,6 @@ export default function DocumentUpload() {
           ? 'स्वीकृत प्रारूप: JPG, PNG, WebP, PDF • अधिकतम 5MB प्रति फ़ाइल'
           : 'Accepted formats: JPG, PNG, WebP, PDF • Max 5MB per file'}
       </p>
-
-      {globalError && (
-        <div style={{
-          marginBottom: '1.5rem', padding: '0.75rem 1rem', borderRadius: '8px',
-          background: 'rgba(239,68,68,0.1)', border: '1px solid var(--color-danger)',
-          color: 'var(--color-danger)', fontSize: '0.875rem',
-        }}>
-          {globalError}
-        </div>
-      )}
 
       {/* Action buttons */}
       <div style={{ display: 'flex', gap: '1rem', width: '100%', maxWidth: '400px' }}>

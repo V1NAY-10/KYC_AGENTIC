@@ -9,7 +9,7 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ stream, 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationRef = useRef<number>();
   const analyserRef = useRef<AnalyserNode | null>(null);
-  const dataArrayRef = useRef<Uint8Array | null>(null);
+  const dataArrayRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
 
   useEffect(() => {
@@ -82,7 +82,7 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ stream, 
 
     const draw = () => {
       animationRef.current = requestAnimationFrame(draw);
-      analyser.getByteTimeDomainData(dataArray);
+      analyser.getByteTimeDomainData(dataArray as Uint8Array<ArrayBuffer>);
 
       ctx.fillStyle = 'rgba(0, 0, 0, 0.2)'; // slight trail effect
       ctx.fillRect(0, 0, canvas.width, canvas.height);

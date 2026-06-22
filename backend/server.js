@@ -22,22 +22,35 @@ import authRoutes from './src/routes/auth.routes.js';
 const app = express();
 const httpServer = createServer(app);
 
+// ─── Allowed Origins (supports comma-separated list in CLIENT_URL) ────────────
+// e.g. CLIENT_URL=https://your-app.vercel.app,http://localhost:3000
+const allowedOrigins = (process.env.CLIENT_URL || 'http://localhost:3000')
+  .split(',')
+  .map(o => o.trim())
+  .filter(Boolean);
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Allow requests with no origin (e.g. curl, Postman, server-to-server)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    callback(new Error(`CORS: origin '${origin}' not allowed`));
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+};
+
 // ─── Socket.IO ───────────────────────────────────────────────────────────────
 const io = new Server(httpServer, {
-  cors: {
-    origin: process.env.CLIENT_URL || 'http://localhost:3000',
-    methods: ['GET', 'POST'],
-    credentials: true,
-  },
+  cors: corsOptions,
+  transports: ['websocket', 'polling'], // polling as fallback for Render proxy
 });
 registerSocketHandlers(io);
 
 // ─── Global Middleware ────────────────────────────────────────────────────────
 app.use(helmet());
-app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:3000',
-  credentials: true,
-}));
+app.use(cors(corsOptions));
 
 // Webhook route needs raw body — must come BEFORE express.json()
 app.use('/api/webhooks', express.raw({ type: 'application/json' }), webhookRoutes);
@@ -85,8 +98,8 @@ connectDB().then(() => {
   setupAgentOrchestrator();
 
   httpServer.listen(PORT, () => {
-    console.log(`🚀 Server running on http://localhost:${PORT}`);
-    console.log(`🔌 Socket.IO ready`);
-    console.log(`🌍 CORS allowed for: ${process.env.CLIENT_URL}`);
+    console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`🔌 Socket.IO ready (transports: websocket, polling)`);
+    console.log(`🌍 CORS allowed origins: ${allowedOrigins.join(' | ')}`);
   });
 });

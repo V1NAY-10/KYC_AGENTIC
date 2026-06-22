@@ -86,9 +86,18 @@ export default function CallPage() {
   useEffect(() => {
     if (!sessionId) { router.push('/onboard/setup'); return; }
 
-    const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-    const SOCKET_URL = API_URL.replace(/\/api$/, '');
-    const newSocket = io(SOCKET_URL, { withCredentials: true });
+    // NEXT_PUBLIC_SOCKET_URL → e.g. https://kyc-backend.onrender.com  (production)
+    //                          or   http://localhost:8000              (dev)
+    const SOCKET_URL =
+      process.env.NEXT_PUBLIC_SOCKET_URL ||
+      (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/api$/, '');
+
+    const newSocket = io(SOCKET_URL, {
+      withCredentials: true,
+      transports: ['websocket', 'polling'],   // polling fallback for Render proxy
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1500,
+    });
     socketRef.current = newSocket;
 
     newSocket.on('connect', () => {

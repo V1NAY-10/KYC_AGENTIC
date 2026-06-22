@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: kyc-backend
+    runtime: node
+    region: oregon           # change to 'singapore' if your users are in Asia
+    plan: starter            # starter = always-on ($7/mo) — required for WebSocket/Socket.io
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 8000
+      # ── Set these manually in Render Dashboard → Environment ──────────────
+      # - key: MONGO_URI
+      # - key: REDIS_URL
+      # - key: CLERK_SECRET_KEY
+      # - key: CLERK_PUBLISHABLE_KEY
+      # - key: CLERK_WEBHOOK_SECRET
+      # - key: CLOUDINARY_URL
+      # - key: GOOGLE_API_KEY   (Gemini)
+      # - key: GROQ_API_KEY
+      # - key: CLIENT_URL       (e.g. https://your-app.vercel.app,http://localhost:3000)

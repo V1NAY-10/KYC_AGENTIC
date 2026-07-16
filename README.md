@@ -1,5 +1,7 @@
 # Aria — AI-Powered KYC Loan Onboarding System
 
+**Live Deployment:** [https://kyc-agentic.vercel.app/](https://kyc-agentic.vercel.app/)
+
 > An agentic, end-to-end video KYC (Know Your Customer) platform that interviews loan applicants via an AI video call, extracts all required data, detects fraud, assesses creditworthiness, and presents a comprehensive intelligence report to loan officers — all without any manual data entry.
 
 ---

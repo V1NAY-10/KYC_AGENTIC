@@ -1,18 +1,20 @@
 import axios from 'axios';
+import { isPrivateIp } from '../../utils/ip.js';
 
 /**
  * Lookup geolocation data for an IP address using ip-api.com (free, no key needed).
  * Free tier: 1,500 requests per hour.
  */
 export async function lookupIP(ip) {
-  // Skip lookup for local/private IPs
-  if (!ip || ip === '::1' || ip.startsWith('127.') || ip.startsWith('192.168.') || ip.startsWith('10.')) {
+  // Local/private IPs have no public location — leave it empty rather than
+  // inventing a "Local" city that geo checks would compare against the address
+  if (isPrivateIp(ip)) {
     return {
       ip,
-      city: 'Local', state: 'Local', country: 'Local',
-      isp: 'Local', org: 'Local',
+      city: null, state: null, country: null,
+      isp: null, org: null,
       isVPN: false, isProxy: false, isTor: false,
-      lat: 0, lon: 0,
+      lat: null, lon: null,
       status: 'local',
     };
   }

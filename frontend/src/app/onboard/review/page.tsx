@@ -4,6 +4,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@clerk/nextjs';
 import { useAppStore } from '@/store/useAppStore';
+import api from '@/lib/api';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -152,13 +153,18 @@ function FieldRow({ field, onEdit, error }: { field: KYCField; onEdit: (key: str
   );
 }
 
-// ─── Pre-uploaded doc type ────────────────────────────────────────────────────
-interface PreDoc {
+// ─── Uploaded documents (read from the server session) ───────────────────────
+interface SessionDoc {
   docType: string;
   cloudUrl: string;
-  preview: string | null; // object URL or null for PDFs
-  fileName: string;
+  fileName?: string;
+  mimeType?: string;
 }
+
+const ID_DOCS = [
+  { type: 'pan',     label: 'PAN Card' },
+  { type: 'aadhaar', label: 'Aadhaar Card' },
+];
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
@@ -175,17 +181,7 @@ export default function ReviewPage() {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [applicationRef, setApplicationRef] = useState<string | null>(null);
-  const [preDocs, setPreDocs] = useState<PreDoc[]>([]);
-
-  // ── Load pre-uploaded docs from localStorage ──────────────────────────────
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem('kyc_pre_docs');
-      if (raw) setPreDocs(JSON.parse(raw) as PreDoc[]);
-    } catch {
-      // ignore
-    }
-  }, []);
+  const [docs, setDocs] = useState<SessionDoc[] | null>(null); // null = loading
 
   // ── Load from sessionStorage ──────────────────────────────────────────────
   useEffect(() => {
@@ -199,6 +195,24 @@ export default function ReviewPage() {
       router.push('/onboard/setup');
     }
   }, [router, sessionId]);
+
+  // ── Load the documents actually attached to this session ─────────────────
+  useEffect(() => {
+    if (!storedSessionId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await getToken();
+        const res = await api.get(`/sessions/${storedSessionId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!cancelled) setDocs((res.data?.session?.documents ?? []) as SessionDoc[]);
+      } catch {
+        if (!cancelled) setDocs([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [storedSessionId, getToken]);
 
   // ── Edit handler ──────────────────────────────────────────────────────────
   const handleEdit = useCallback((key: string, value: string) => {
@@ -457,40 +471,52 @@ export default function ReviewPage() {
             <span style={{ fontSize: '1rem' }}>📎</span>
             <h2 style={{ fontSize: '1rem', fontWeight: '700', color: '#0891b2', margin: 0 }}>Uploaded Documents</h2>
           </div>
-          {preDocs.length === 0 ? (
-            <p style={{ fontSize: '0.8rem', color: '#94a3b8', fontStyle: 'italic' }}>
-              No documents were uploaded before the interview. You can provide them to the loan officer separately.
-            </p>
+          {docs === null ? (
+            <p style={{ fontSize: '0.8rem', color: '#94a3b8', fontStyle: 'italic' }}>Loading documents…</p>
           ) : (
             <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
-              {preDocs.map(doc => (
-                <div key={doc.docType} style={{
-                  flex: '1 1 200px', minWidth: '180px', maxWidth: '260px',
-                  border: '1.5px solid #86efac', borderRadius: '10px',
-                  background: '#f0fdf4', padding: '0.875rem',
-                  display: 'flex', flexDirection: 'column', gap: '0.5rem',
-                }}>
-                  {/* Thumbnail or PDF icon */}
-                  {doc.preview ? (
-                    <img
-                      src={doc.preview}
-                      alt={doc.docType}
-                      style={{ width: '100%', height: '100px', objectFit: 'cover', borderRadius: '6px', border: '1px solid #bbf7d0' }}
-                      onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
-                    />
-                  ) : (
-                    <div style={{ width: '100%', height: '64px', background: '#dcfce7', borderRadius: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2rem' }}>
-                      📄
+              {ID_DOCS.map(({ type, label }) => {
+                const doc = docs.find(d => d.docType === type);
+                const isImage = !!doc?.mimeType?.startsWith('image/');
+                return (
+                  <div key={type} style={{
+                    flex: '1 1 200px', minWidth: '180px', maxWidth: '260px',
+                    border: `1.5px ${doc ? 'solid #86efac' : 'dashed #cbd5e1'}`, borderRadius: '10px',
+                    background: doc ? '#f0fdf4' : '#f8fafc', padding: '0.875rem',
+                    display: 'flex', flexDirection: 'column', gap: '0.5rem',
+                  }}>
+                    {/* Thumbnail, PDF icon, or empty placeholder */}
+                    {doc && isImage ? (
+                      <img
+                        src={doc.cloudUrl}
+                        alt={label}
+                        style={{ width: '100%', height: '100px', objectFit: 'cover', borderRadius: '6px', border: '1px solid #bbf7d0' }}
+                        onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+                      />
+                    ) : (
+                      <div style={{ width: '100%', height: '64px', background: doc ? '#dcfce7' : '#f1f5f9', borderRadius: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2rem', opacity: doc ? 1 : 0.5 }}>
+                        📄
+                      </div>
+                    )}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
+                      <span style={{ fontSize: '0.875rem', fontWeight: '700', color: '#0f172a' }}>{label}</span>
+                      {doc ? (
+                        <span style={{ fontSize: '0.6rem', background: '#dcfce7', color: '#15803d', border: '1px solid #86efac', borderRadius: '4px', padding: '1px 5px', fontWeight: '700', textTransform: 'uppercase' }}>✓ Uploaded</span>
+                      ) : (
+                        <span style={{ fontSize: '0.6rem', background: '#f1f5f9', color: '#64748b', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '1px 5px', fontWeight: '700', textTransform: 'uppercase' }}>Not uploaded</span>
+                      )}
                     </div>
-                  )}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
-                    <span style={{ fontSize: '0.875rem', fontWeight: '700', color: '#0f172a', textTransform: 'uppercase' }}>{doc.docType}</span>
-                    <span style={{ fontSize: '0.6rem', background: '#dcfce7', color: '#15803d', border: '1px solid #86efac', borderRadius: '4px', padding: '1px 5px', fontWeight: '700', textTransform: 'uppercase' }}>✓ Uploaded</span>
+                    {doc ? (
+                      <>
+                        <span style={{ fontSize: '0.7rem', color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{doc.fileName}</span>
+                        <a href={doc.cloudUrl} target="_blank" rel="noreferrer" style={{ fontSize: '0.7rem', color: '#0891b2', textDecoration: 'none', fontWeight: '600' }}>View full document →</a>
+                      </>
+                    ) : (
+                      <span style={{ fontSize: '0.7rem', color: '#94a3b8' }}>Can be provided to the loan officer later</span>
+                    )}
                   </div>
-                  <span style={{ fontSize: '0.7rem', color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{doc.fileName}</span>
-                  <a href={doc.cloudUrl} target="_blank" rel="noreferrer" style={{ fontSize: '0.7rem', color: '#0891b2', textDecoration: 'none', fontWeight: '600' }}>View full document →</a>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

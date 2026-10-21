@@ -3,8 +3,8 @@ import { lookupIP } from '../services/geo/ipLookup.service.js';
 import GeoLog from '../models/GeoLog.model.js';
 
 export const geoCaptureMiddleware = async (req, res, next) => {
-  // Try to get real IP if behind a proxy like Render/Vercel
-  const ip = req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress;
+  // req.ip honours `trust proxy` (one hop on Render) — a raw X-Forwarded-For can be spoofed
+  const ip = req.ip || req.socket.remoteAddress;
   req.clientIp = ip;
 
   try {

@@ -1,4 +1,5 @@
 import { chat } from './llm.service.js';
+import { ageFromDob, todayLabel } from '../../utils/age.js';
 
 // ─── Rule Thresholds ──────────────────────────────────────────────────────────
 const RULES = {
@@ -24,6 +25,20 @@ function runRules(fields, fraudSignals = []) {
   let manualReview = false;
   const reasons = [];
   const conditions = [];
+
+  // 0. Age — computed here, never by the LLM (it doesn't know today's date)
+  const dobField = fields.find(f => f.key === 'dateOfBirth');
+  const age = ageFromDob(dobField?.finalValue ?? dobField?.aiExtractedValue);
+  if (age !== null) {
+    flags.applicantAge = age;
+    if (age < 18) {
+      hardReject = true;
+      reasons.push(`Applicant is ${age} years old — below the minimum age of 18.`);
+    } else if (age > 65) {
+      manualReview = true;
+      reasons.push(`Applicant is ${age} years old — loan tenure may extend past retirement age.`);
+    }
+  }
 
   // 1. Income check
   const income = get('monthlyIncome');
@@ -66,10 +81,11 @@ function runRules(fields, fraudSignals = []) {
     const months = employmentYears.value >= 10
       ? employmentYears.value          // assume months if huge
       : employmentYears.value * 12;    // convert years
-    flags.employmentMonths = months;
+    const roundedMonths = Math.max(1, Math.round(months));
+    flags.employmentMonths = roundedMonths;
     if (months < RULES.MIN_EMPLOYMENT_MONTHS) {
       manualReview = true;
-      reasons.push(`Employment tenure is only ${months} month(s) — below the 6-month minimum.`);
+      reasons.push(`Employment tenure is only about ${roundedMonths} month${roundedMonths === 1 ? '' : 's'} — below the ${RULES.MIN_EMPLOYMENT_MONTHS}-month minimum.`);
       conditions.push('Provide additional income proof (bank statements for last 6 months).');
     }
   }
@@ -106,11 +122,17 @@ async function llmAssessment(fields, ruleResult, language) {
   const systemPrompt = `You are a senior personal loan credit officer at an Indian bank.
 You have received the following applicant profile from a KYC video interview.
 
+TODAY'S DATE: ${todayLabel()}
+APPLICANT AGE: ${ruleResult.flags.applicantAge ?? 'unknown'} years (computed from date of birth — use this value, do not recalculate)
+
 APPLICANT PROFILE:
 ${JSON.stringify(profile, null, 2)}
 
 RULE ENGINE FLAGS:
 ${JSON.stringify(ruleResult.flags, null, 2)}
+
+ISSUES ALREADY REPORTED BY THE RULE ENGINE (do NOT repeat or rephrase these in keyRisks):
+${ruleResult.reasons.map(r => `- ${r}`).join('\n') || '- none'}
 
 Perform a holistic credit assessment. Consider:
 - Income stability vs loan size
@@ -127,7 +149,10 @@ Return ONLY valid JSON:
   "keyRisks": ["..."],
   "additionalConditions": ["..."],
   "summary": "One sentence officer summary"
-}`;
+}
+
+keyStrengths: list genuine positives (e.g. no existing EMIs, income comfortably above the minimum); use [] only if there are none.
+Be factual — only reference values present in the profile.`;
 
   try {
     return await chat({ systemPrompt, userMessage: 'Assess this applicant.', json: true, lane: 'secondary' });

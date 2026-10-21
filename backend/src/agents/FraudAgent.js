@@ -1,4 +1,15 @@
 import { BaseAgent } from './base/BaseAgent.js';
+import { scoreSignals, riskLevelFor } from '../utils/fraudScore.js';
+import { ageFromDob, todayLabel } from '../utils/age.js';
+
+const INDIAN_STATES = [
+  'andhra pradesh', 'arunachal pradesh', 'assam', 'bihar', 'chhattisgarh', 'goa', 'gujarat',
+  'haryana', 'himachal pradesh', 'jharkhand', 'karnataka', 'kerala', 'madhya pradesh',
+  'maharashtra', 'manipur', 'meghalaya', 'mizoram', 'nagaland', 'odisha', 'orissa', 'punjab',
+  'rajasthan', 'sikkim', 'tamil nadu', 'telangana', 'tripura', 'uttar pradesh', 'uttarakhand',
+  'west bengal', 'delhi', 'new delhi', 'jammu and kashmir', 'ladakh', 'puducherry', 'pondicherry',
+  'chandigarh', 'andaman and nicobar islands', 'dadra and nagar haveli and daman and diu', 'lakshadweep',
+];
 
 /**
  * FraudAgent
@@ -25,23 +36,21 @@ export class FraudAgent extends BaseAgent {
   }
 
   async run({ sessionId, collectedFields = {}, transcript = '', geoData = {}, language = 'en', existingSignals = [] }) {
-    const allSignals = [...existingSignals];
-    let totalScore   = 0;
+    const newSignals = [];
 
     // ── 1. Geo risk (via fraudScorer tool) ────────────────────────────────────
-    const statedCity  = this._extractCity(collectedFields.currentAddress);
-    const statedState = this._extractState(collectedFields.currentAddress);
+    const { city: statedCity, state: statedState } = this._parseAddress(collectedFields.currentAddress);
 
     try {
+      // Geo checks only — existing signals are scored once, below, with everything else
       const geoResult = await this.useTool('score_fraud', {
-        signals:     existingSignals,
+        signals:     [],
         geoData,
         statedCity,
         statedState,
       }, sessionId);
 
-      totalScore += geoResult.score;
-      allSignals.push(...(geoResult.flags || []));
+      newSignals.push(...(geoResult.flags || []));
     } catch (e) {
       this.log('warn', 'Geo fraud scoring failed', { sessionId, error: e.message });
     }
@@ -50,15 +59,15 @@ export class FraudAgent extends BaseAgent {
     if (Object.keys(collectedFields).length >= 3) {
       try {
         const dataResult = await this._checkDataConsistency(collectedFields, transcript, language, sessionId);
-        totalScore += dataResult.additionalScore || 0;
-        allSignals.push(...(dataResult.signals || []));
+        newSignals.push(...(dataResult.signals || []));
       } catch (e) {
         this.log('warn', 'Data consistency check failed', { sessionId, error: e.message });
       }
     }
 
-    const cappedScore = Math.min(100, totalScore);
-    const riskLevel   = cappedScore >= 60 ? 'high' : cappedScore >= 30 ? 'medium' : 'low';
+    const allSignals  = [...existingSignals, ...newSignals];
+    const cappedScore = scoreSignals(allSignals);
+    const riskLevel   = riskLevelFor(cappedScore);
     const recommendation = cappedScore >= 70 ? 'flag' : cappedScore >= 40 ? 'probe' : 'continue';
 
     const geoAnalysis = {
@@ -76,16 +85,21 @@ export class FraudAgent extends BaseAgent {
   }
 
   async _checkDataConsistency(collectedFields, transcript, language, sessionId) {
+    const age = ageFromDob(collectedFields.dateOfBirth);
     const systemPrompt = `You are a fraud detection specialist reviewing a KYC loan interview.
 
+TODAY'S DATE: ${todayLabel()}
+APPLICANT AGE (computed from date of birth — trust this, do not recalculate): ${age ?? 'unknown'}
 COLLECTED DATA: ${JSON.stringify(collectedFields, null, 2)}
 LATEST USER STATEMENT: "${transcript}"
 
 Check for:
-1. Contradictions (e.g., stated city ≠ address city)
-2. Implausible values (income = 0, age < 18, loan amount unreasonably large)
+1. Contradictions between fields or with the latest statement
+2. Implausible values (income = 0, applicant age under 18, loan amount unreasonably large)
 3. Suspicious patterns (round income numbers like "exactly 50000", evasive answers)
 4. Inconsistencies across fields (e.g., employer stated in city different from address)
+
+Do NOT raise IP / geolocation issues — those are checked separately.
 
 Return ONLY valid JSON:
 {
@@ -105,17 +119,27 @@ If no issues found: return { "signals": [], "additionalScore": 0 }`;
     }
   }
 
-  // Simple address parsers — extracts approximate city/state from free-text address
-  _extractCity(address) {
-    if (!address) return null;
-    const parts = String(address).split(',').map(s => s.trim()).filter(Boolean);
-    return parts.length >= 2 ? parts[parts.length - 2] : null;
-  }
+  /**
+   * Approximate city / state from a free-text Indian address.
+   * "Flat 4, MG Road, Pune, Maharashtra 411001" → { city: 'Pune', state: 'Maharashtra' }
+   * "C108 Greenwald, Navi Mumbai"               → { city: 'Navi Mumbai', state: null }
+   */
+  _parseAddress(address) {
+    if (!address) return { city: null, state: null };
+    const parts = String(address)
+      .split(',')
+      .map(p => p.replace(/\b\d{6}\b/g, '').replace(/\bindia\b/i, '').trim())
+      .filter(Boolean);
+    if (parts.length === 0) return { city: null, state: null };
 
-  _extractState(address) {
-    if (!address) return null;
-    const parts = String(address).split(',').map(s => s.trim()).filter(Boolean);
-    if (parts.length < 1) return null;
-    return parts[parts.length - 1].replace(/\d{6}/, '').trim() || null;
+    const stateIdx = parts.findLastIndex(p => INDIAN_STATES.includes(p.toLowerCase()));
+    if (stateIdx >= 0) {
+      const city = stateIdx > 0 ? parts[stateIdx - 1] : null;
+      return { city: city && !/\d/.test(city) ? city : null, state: parts[stateIdx] };
+    }
+
+    // No state named — the last part without house/flat numbers is the best city guess
+    const last = parts[parts.length - 1];
+    return { city: /\d/.test(last) ? null : last, state: null };
   }
 }

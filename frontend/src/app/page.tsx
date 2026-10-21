@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { SignedIn, SignedOut, UserButton, SignOutButton } from '@clerk/nextjs';
+import MyApplications from '@/components/MyApplications';
 
 export default function LandingPage() {
   return (
@@ -52,9 +53,16 @@ export default function LandingPage() {
           Our AI assistant interviews you in your preferred language, verifying your identity and affordability instantly via video call.
         </p>
 
-        <Link href="/sign-up" className="btn-primary" style={{ fontSize: '1.25rem', padding: '1rem 2rem' }}>
-          Start Application Process →
-        </Link>
+        <SignedOut>
+          <Link href="/sign-up" className="btn-primary" style={{ fontSize: '1.25rem', padding: '1rem 2rem' }}>
+            Start Application Process →
+          </Link>
+        </SignedOut>
+        <SignedIn>
+          <Link href="/onboard/language" className="btn-primary" style={{ fontSize: '1.25rem', padding: '1rem 2rem' }}>
+            Start New Application →
+          </Link>
+        </SignedIn>
 
         {/* How it works simple row */}
         <div style={{ display: 'flex', gap: '2rem', marginTop: '5rem', flexWrap: 'wrap', justifyContent: 'center' }}>
@@ -74,6 +82,13 @@ export default function LandingPage() {
           ))}
         </div>
       </main>
+
+      {/* Applicant's own applications */}
+      <SignedIn>
+        <div style={{ marginTop: '6rem', paddingBottom: '6rem' }}>
+          <MyApplications />
+        </div>
+      </SignedIn>
 
     </div>
   );

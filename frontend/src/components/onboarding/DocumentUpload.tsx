@@ -128,27 +128,23 @@ export default function DocumentUpload() {
         cloudUrl: res.data.url,
         error: null,
       });
-
-      // ── Persist to localStorage so the review page can display the doc ──────
-      try {
-        const existing = JSON.parse(localStorage.getItem('kyc_pre_docs') || '[]') as Array<{
-          docType: string; cloudUrl: string; preview: string | null; fileName: string;
-        }>;
-        const filtered = existing.filter(d => d.docType !== type); // replace same type
-        filtered.push({
-          docType:  type,
-          cloudUrl: res.data.url,
-          preview:  preview,   // null for PDFs, object URL for images
-          fileName: file.name,
-        });
-        localStorage.setItem('kyc_pre_docs', JSON.stringify(filtered));
-      } catch {
-        // non-fatal — localStorage might be unavailable
-      }
     } catch (err: unknown) {
       const e = err as { response?: { data?: { error?: string } } };
       const msg = e.response?.data?.error || 'Upload failed. Try again.';
       setSlot(type, { status: 'error', error: msg });
+    }
+  }, [getToken]);
+
+  // ── Remove — also drop it server-side, otherwise it still gets attached to the session ──
+  const handleRemove = useCallback(async (type: DocType) => {
+    setSlot(type, { file: null, preview: null, status: 'idle', cloudUrl: null, error: null });
+    try {
+      const token = await getToken();
+      await api.delete(`/sessions/pre-documents/${type}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch {
+      setSlot(type, { error: 'Could not remove the document. Please try again.' });
     }
   }, [getToken]);
 
@@ -213,7 +209,7 @@ export default function DocumentUpload() {
             onDragOver={(e) => onDragOver(e, slot.type)}
             onDragLeave={() => setDragOver(null)}
             onClick={() => fileInputRefs.current[slot.type]?.click()}
-            onRemove={() => setSlot(slot.type, { file: null, preview: null, status: 'idle', cloudUrl: null, error: null })}
+            onRemove={() => handleRemove(slot.type)}
           />
         ))}
       </div>

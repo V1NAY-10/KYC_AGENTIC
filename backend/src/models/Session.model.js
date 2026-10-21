@@ -69,6 +69,11 @@ const SessionSchema = new mongoose.Schema({
     reasons:       [String],
     conditions:    [String],
     ruleFlags:     { type: Map, of: mongoose.Schema.Types.Mixed },
+    llmAssessment: {
+      strengths: [String],
+      risks:     [String],
+      summary:   String,
+    },
     decidedAt:     Date,
   },
 

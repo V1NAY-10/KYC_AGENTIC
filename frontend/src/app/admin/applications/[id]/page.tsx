@@ -11,7 +11,13 @@ interface KYCField {
   finalValue: string; aiExtractedValue: string;
   confidence: number; isEdited: boolean; isFlagged: boolean;
 }
-interface Document { docType: string; cloudUrl: string; fileName: string; verified: boolean; verificationNote: string; }
+interface Document { docType: string; cloudUrl: string; fileName: string; mimeType?: string; uploadedAt?: string; verified: boolean; verificationNote: string; }
+interface GeoRisk {
+  ipAddress: string | null; isPrivateNetwork: boolean;
+  city: string | null; state: string | null; country: string | null; isp: string | null;
+  isVPN: boolean; isProxy: boolean; isTor: boolean;
+  statedAddress: string | null; flags: string[]; riskLevel: string;
+}
 interface FraudSignal { type: string; severity: string; description: string; }
 interface LoanDecision {
   decision: string; score: number; reasons: string[]; conditions: string[];
@@ -24,11 +30,11 @@ interface InterviewSummary {
 }
 interface AppDetail {
   application: { _id: string; referenceNumber: string; status: string; loanType: string; loanAmount: number; tenure: number; purpose: string; createdAt: string; officerNote: string; officerDecision: string; };
-  applicant:   { name: string; email: string; };
-  session:     { durationSeconds: number; turnCount: number; traceCount: number; startTime: string; endTime: string; };
+  applicant:   { name: string; email: string | null; age: number | null; };
+  session:     { durationSeconds: number; turnCount: number; traceCount: number; startTime: string; endTime: string; language: string; };
   kycFields:   KYCField[];
   documents:   Document[];
-  geoRisk:     { ipAddress: string; city: string; country: string; isp: string; isVPN: boolean; isProxy: boolean; isTor: boolean; riskLevel: string; };
+  geoRisk:     GeoRisk;
   fraudIntelligence: { score: number; riskLevel: string; signals: FraudSignal[]; };
   interviewSummary:  InterviewSummary | null;
   loanDecision:      LoanDecision | null;
@@ -61,8 +67,83 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
 }
 
 function RiskBadge({ level }: { level: string }) {
-  const c = level === 'high' ? '#ef4444' : level === 'medium' ? '#f59e0b' : '#10b981';
-  return <span style={{ padding: '3px 8px', borderRadius: '6px', background: `${c}18`, border: `1px solid ${c}40`, color: c, fontSize: '0.65rem', fontWeight: '700', textTransform: 'uppercase' }}>{level} Risk</span>;
+  const c = level === 'high' ? '#ef4444' : level === 'medium' ? '#f59e0b' : level === 'low' ? '#10b981' : '#64748b';
+  return <span style={{ padding: '3px 8px', borderRadius: '6px', background: `${c}18`, border: `1px solid ${c}40`, color: c, fontSize: '0.65rem', fontWeight: '700', textTransform: 'uppercase' }}>{level === 'unknown' ? 'Not assessed' : `${level} Risk`}</span>;
+}
+
+const Muted = ({ children }: { children: React.ReactNode }) => (
+  <span style={{ color: '#64748b', fontStyle: 'italic', fontWeight: 400 }}>{children}</span>
+);
+
+const SectionLabel = ({ children, color = '#64748b' }: { children: React.ReactNode; color?: string }) => (
+  <div style={{ fontSize: '0.65rem', color, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>{children}</div>
+);
+
+// Money-like KYC fields render as ₹ amounts
+const MONEY_KEY = /income|emi|amount/i;
+function formatFieldValue(key: string, val: string | number | null | undefined) {
+  if (val === null || val === undefined || val === '') return null;
+  const n = Number(String(val).replace(/[,₹\s]/g, ''));
+  return MONEY_KEY.test(key) && Number.isFinite(n) ? `₹${n.toLocaleString('en-IN')}` : String(val);
+}
+
+/* ─── IP & Geo panel ─────────────────────────────────────────────────────────── */
+function GeoPanel({ geo }: { geo: GeoRisk }) {
+  const location = [geo.city, geo.state, geo.country].filter(Boolean).join(', ');
+  const addressMatches = geo.city && geo.statedAddress
+    ? geo.statedAddress.toLowerCase().includes(geo.city.toLowerCase())
+    : null;
+  const network = [
+    { label: 'VPN / Hosting', active: geo.isVPN },
+    { label: 'Proxy',         active: geo.isProxy },
+    { label: 'Tor',           active: geo.isTor },
+  ];
+
+  return (
+    <Panel title="IP & Geo Risk" icon="📍" accent={geo.riskLevel === 'high' || geo.riskLevel === 'medium' ? '#f59e0b' : undefined}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.875rem' }}>
+        <RiskBadge level={geo.riskLevel} />
+        {geo.ipAddress && <code style={{ fontSize: '0.75rem', color: '#94a3b8' }}>{geo.ipAddress}</code>}
+      </div>
+
+      {geo.isPrivateNetwork ? (
+        <div style={{ padding: '0.75rem', borderRadius: '8px', background: 'rgba(100,116,139,0.08)', border: '1px solid rgba(100,116,139,0.2)', fontSize: '0.775rem', color: '#94a3b8', lineHeight: 1.55, marginBottom: '0.75rem' }}>
+          <strong style={{ color: 'var(--color-text-primary)' }}>Local / private network.</strong>{' '}
+          This application was submitted from {geo.ipAddress === '::1' || geo.ipAddress?.startsWith('127.') ? 'localhost' : 'a private network address'}, which has no public geolocation — location checks were skipped.
+        </div>
+      ) : (
+        <>
+          <Row label="IP Location" value={location || <Muted>Unavailable</Muted>} />
+          <Row label="ISP" value={geo.isp || <Muted>Unknown</Muted>} />
+        </>
+      )}
+
+      <Row label="Stated Address" value={geo.statedAddress || <Muted>Not provided</Muted>} />
+      {addressMatches !== null && (
+        <Row label="Address Match" value={addressMatches
+          ? <span style={{ color: '#10b981' }}>✓ IP city matches address</span>
+          : <span style={{ color: '#f59e0b' }}>⚠ IP city differs from address</span>} />
+      )}
+
+      <div style={{ marginTop: '0.875rem' }}>
+        <SectionLabel>Network Checks</SectionLabel>
+        {network.map(n => (
+          <div key={n.label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.775rem', padding: '3px 0' }}>
+            <span style={{ color: '#94a3b8' }}>{n.label}</span>
+            <span style={{ color: n.active ? '#ef4444' : '#10b981', fontWeight: 600 }}>{n.active ? 'Detected' : 'Not detected'}</span>
+          </div>
+        ))}
+      </div>
+
+      {geo.flags.length > 0 && (
+        <div style={{ marginTop: '0.75rem' }}>
+          {geo.flags.map((f, i) => (
+            <div key={i} style={{ fontSize: '0.75rem', color: '#f59e0b', marginBottom: '4px' }}>⚠ {f}</div>
+          ))}
+        </div>
+      )}
+    </Panel>
+  );
 }
 
 function ScoreGauge({ score, invert = false }: { score: number; invert?: boolean }) {
@@ -148,9 +229,23 @@ export default function ApplicationDetailPage() {
 
   const { application, applicant, session, kycFields, documents, geoRisk, fraudIntelligence, interviewSummary, loanDecision } = data;
   const fmt = (n: number) => n ? `₹${n.toLocaleString('en-IN')}` : '—';
+  const submittedAt = new Date(application.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+  // Risks: rule-engine findings + LLM risks, without repeats
+  const risks = Array.from(new Set([...(loanDecision?.reasons || []), ...(loanDecision?.llmAssessment?.risks || [])]));
+  const ID_DOCS = [{ type: 'pan', label: 'PAN Card' }, { type: 'aadhaar', label: 'Aadhaar Card' }];
 
   return (
     <div style={{ paddingBottom: '5rem' }}>
+      <style>{`
+        .detail-grid { display: grid; grid-template-columns: minmax(0,2fr) minmax(0,1fr); gap: 1.25rem; align-items: start; }
+        .detail-side { display: flex; flex-direction: column; gap: 1.25rem; align-self: stretch; } /* full height so the decision box can stick */
+        .detail-sticky { position: sticky; top: 80px; }
+        @media (max-width: 960px) {
+          .detail-grid { grid-template-columns: minmax(0,1fr); }
+          .detail-sticky { position: static; }
+        }
+      `}</style>
 
       {/* Header */}
       <div style={{ marginBottom: '1.5rem', paddingBottom: '1rem', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
@@ -159,22 +254,26 @@ export default function ApplicationDetailPage() {
           Application <span style={{ fontFamily: 'monospace', color: 'var(--color-accent-blue)' }}>#{application.referenceNumber}</span>
         </h1>
         <div style={{ fontSize: '0.8rem', color: '#64748b', marginTop: '4px' }}>
-          {applicant.name} · {applicant.email} · {new Date(application.createdAt).toLocaleString()}
+          {[applicant.name, applicant.email, `Submitted ${submittedAt}`].filter(Boolean).join(' · ')}
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,2fr) minmax(0,1fr)', gap: '1.25rem', alignItems: 'start' }}>
+      <div className="detail-grid">
 
         {/* ── LEFT COLUMN ── */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
 
           {/* Applicant & Loan */}
           <Panel title="Applicant & Loan Details" icon="👤">
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '2rem' }}>
               <div>
                 <div style={{ fontSize: '0.65rem', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>Profile</div>
                 <Row label="Name" value={<strong style={{ color: 'var(--color-text-primary)' }}>{applicant.name}</strong>} />
-                <Row label="Email" value={applicant.email} />
+                <Row label="Age" value={applicant.age !== null ? `${applicant.age} years` : <Muted>Unknown</Muted>} />
+                <Row label="Email" value={applicant.email
+                  ? <span style={{ wordBreak: 'break-all' }}>{applicant.email}</span>
+                  : <Muted>Not available</Muted>} />
+                <Row label="Interview" value={session.language === 'hi' ? 'Hindi' : 'English'} />
               </div>
               <div>
                 <div style={{ fontSize: '0.65rem', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>Loan Request</div>
@@ -199,9 +298,9 @@ export default function ApplicationDetailPage() {
             {kycFields.length === 0 ? (
               <p style={{ fontSize: '0.8rem', color: '#64748b', fontStyle: 'italic' }}>No KYC fields extracted.</p>
             ) : (
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '0.5rem' }}>
                 {kycFields.map((f) => {
-                  const val = f.finalValue || f.aiExtractedValue;
+                  const val = formatFieldValue(f.key, f.finalValue || f.aiExtractedValue);
                   const conf = Math.round((f.confidence || 0) * 100);
                   return (
                     <div key={f.key} style={{ padding: '0.625rem', borderRadius: '8px', background: f.isFlagged ? 'rgba(245,158,11,0.05)' : 'rgba(255,255,255,0.02)', border: `1px solid ${f.isFlagged ? 'rgba(245,158,11,0.2)' : 'rgba(255,255,255,0.06)'}` }}>
@@ -225,24 +324,40 @@ export default function ApplicationDetailPage() {
 
           {/* Documents */}
           <Panel title="Documents & Verification" icon="📄">
-            {documents.length === 0 ? (
-              <p style={{ fontSize: '0.8rem', color: '#64748b', fontStyle: 'italic' }}>No documents uploaded.</p>
-            ) : (
-              <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
-                {documents.map((doc, i) => (
-                  <div key={i} style={{ flex: '1 1 200px', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '10px', padding: '1rem', background: 'rgba(255,255,255,0.02)' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-                      <span style={{ fontWeight: '700', textTransform: 'uppercase', fontSize: '0.875rem' }}>{doc.docType}</span>
-                      <a href={doc.cloudUrl} target="_blank" rel="noreferrer" style={{ fontSize: '0.75rem', color: 'var(--color-accent-blue)', textDecoration: 'none' }}>View →</a>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem' }}>
+              {ID_DOCS.map(({ type, label }) => {
+                const doc = documents.find(d => d.docType === type);
+                if (!doc) {
+                  return (
+                    <div key={type} style={{ border: '1px dashed rgba(255,255,255,0.12)', borderRadius: '10px', padding: '1rem', display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: '4px', minHeight: '120px' }}>
+                      <span style={{ fontWeight: '700', fontSize: '0.875rem', color: '#94a3b8' }}>{label}</span>
+                      <span style={{ fontSize: '0.75rem', color: '#64748b' }}>Not uploaded by applicant</span>
                     </div>
-                    <div style={{ fontSize: '0.7rem', color: '#64748b', marginBottom: '0.5rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{doc.fileName}</div>
+                  );
+                }
+                const isImage = doc.mimeType?.startsWith('image/');
+                return (
+                  <div key={type} style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: '10px', padding: '1rem', background: 'rgba(255,255,255,0.02)', display: 'flex', flexDirection: 'column', gap: '0.5rem', minWidth: 0 }}>
+                    {isImage && (
+                      <a href={doc.cloudUrl} target="_blank" rel="noreferrer">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={doc.cloudUrl} alt={label} style={{ width: '100%', height: '110px', objectFit: 'cover', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.08)' }} />
+                      </a>
+                    )}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontWeight: '700', fontSize: '0.875rem' }}>{label}</span>
+                      <a href={doc.cloudUrl} target="_blank" rel="noreferrer" style={{ fontSize: '0.75rem', color: 'var(--color-accent-blue)', textDecoration: 'none' }}>Open →</a>
+                    </div>
+                    <div style={{ fontSize: '0.7rem', color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {doc.fileName}{doc.uploadedAt ? ` · ${new Date(doc.uploadedAt).toLocaleDateString('en-IN')}` : ''}
+                    </div>
                     <div style={{ padding: '5px 8px', borderRadius: '6px', background: doc.verified ? 'rgba(16,185,129,0.08)' : 'rgba(245,158,11,0.08)', border: `1px solid ${doc.verified ? '#10b98130' : '#f59e0b30'}`, fontSize: '0.7rem', color: doc.verified ? '#10b981' : '#f59e0b' }}>
-                      {doc.verified ? '✅' : '⚠️'} {doc.verificationNote}
+                      {doc.verified ? '✅' : '⚠️'} {doc.verified ? doc.verificationNote : 'Pending manual verification — compare with the stated ID number'}
                     </div>
                   </div>
-                ))}
-              </div>
-            )}
+                );
+              })}
+            </div>
           </Panel>
 
           {/* AI Loan Assessment */}
@@ -266,7 +381,7 @@ export default function ApplicationDetailPage() {
                   )}
                 </div>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.25rem' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1.25rem' }}>
                 <div>
                   <div style={{ fontSize: '0.65rem', color: '#10b981', fontWeight: '700', textTransform: 'uppercase', marginBottom: '0.5rem' }}>✓ Strengths</div>
                   {(loanDecision.llmAssessment?.strengths || []).map((s, i) => (
@@ -278,11 +393,12 @@ export default function ApplicationDetailPage() {
                 </div>
                 <div>
                   <div style={{ fontSize: '0.65rem', color: '#ef4444', fontWeight: '700', textTransform: 'uppercase', marginBottom: '0.5rem' }}>✕ Risks</div>
-                  {(loanDecision.llmAssessment?.risks || loanDecision.reasons || []).map((r, i) => (
+                  {risks.map((r, i) => (
                     <div key={i} style={{ fontSize: '0.775rem', color: '#94a3b8', marginBottom: '4px', display: 'flex', gap: '6px' }}>
                       <span style={{ color: '#ef4444', flexShrink: 0 }}>•</span>{r}
                     </div>
                   ))}
+                  {risks.length === 0 && <div style={{ fontSize: '0.775rem', color: '#64748b', fontStyle: 'italic' }}>None noted</div>}
                 </div>
               </div>
               {loanDecision.conditions?.length > 0 && (
@@ -345,7 +461,7 @@ export default function ApplicationDetailPage() {
         </div>
 
         {/* ── RIGHT COLUMN ── */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+        <div className="detail-side">
 
           {/* Fraud Intelligence */}
           <Panel title="Fraud Intelligence" icon="🛡️" accent={fraudIntelligence.score > 30 ? '#ef4444' : undefined}>
@@ -353,7 +469,9 @@ export default function ApplicationDetailPage() {
               <ScoreGauge score={fraudIntelligence.score} invert />
               <div>
                 <RiskBadge level={fraudIntelligence.riskLevel} />
-                <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '6px' }}>{fraudIntelligence.signals.length} signal(s) detected</div>
+                <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '6px' }}>
+                  {fraudIntelligence.signals.length === 0 ? 'No signals raised' : `${fraudIntelligence.signals.length} signal${fraudIntelligence.signals.length > 1 ? 's' : ''} raised during the interview`}
+                </div>
               </div>
             </div>
             {fraudIntelligence.signals.map((sig, i) => (
@@ -368,21 +486,10 @@ export default function ApplicationDetailPage() {
           </Panel>
 
           {/* IP & Geo */}
-          <Panel title="IP & Geo Risk" icon="📍" accent={geoRisk.isVPN || geoRisk.isProxy ? '#f59e0b' : undefined}>
-            <div style={{ marginBottom: '0.75rem' }}><RiskBadge level={geoRisk.riskLevel} /></div>
-            <Row label="IP Address" value={<code style={{ fontSize: '0.75rem' }}>{geoRisk.ipAddress}</code>} />
-            <Row label="Location" value={`${geoRisk.city}, ${geoRisk.country}`} />
-            <Row label="ISP" value={geoRisk.isp} />
-            <div style={{ display: 'flex', gap: '6px', marginTop: '0.75rem' }}>
-              {['VPN', 'Proxy', 'Tor'].map((label, i) => {
-                const active = [geoRisk.isVPN, geoRisk.isProxy, geoRisk.isTor][i];
-                return <span key={label} style={{ fontSize: '0.65rem', padding: '2px 7px', borderRadius: '4px', background: active ? 'rgba(239,68,68,0.12)' : 'rgba(255,255,255,0.05)', color: active ? '#ef4444' : '#64748b', fontWeight: '700' }}>{label}</span>;
-              })}
-            </div>
-          </Panel>
+          <GeoPanel geo={geoRisk} />
 
-          {/* Officer Decision — sticky */}
-          <div style={{ position: 'sticky', top: '80px' }}>
+          {/* Officer Decision — stays in view while scrolling the report */}
+          <div className="detail-sticky">
             <section style={{ padding: '1.25rem', borderRadius: '14px', background: 'rgba(59,130,246,0.05)', border: '1px solid rgba(59,130,246,0.2)' }}>
               <h2 style={{ fontSize: '0.875rem', fontWeight: '600', color: '#dbeafe', marginBottom: '1rem' }}>⚖️ Officer Decision</h2>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.875rem' }}>

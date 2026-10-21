@@ -55,8 +55,11 @@ export const fraudScorerTool = {
       resultFlags.push({ type: 'TOR_DETECTED', description: 'Tor exit node detected', severity: 'high', weight: w });
     }
 
+    // Mismatch checks need a real IP location (none for localhost / private networks)
+    const hasIpLocation = geoData.status !== 'local' && !!geoData.city && geoData.city !== 'Local';
+
     // City mismatch
-    if (statedCity && geoData.city) {
+    if (hasIpLocation && statedCity) {
       const ipCity     = geoData.city.toLowerCase().trim();
       const claimedCity = statedCity.toLowerCase().trim();
       if (!ipCity.includes(claimedCity) && !claimedCity.includes(ipCity)) {
@@ -73,7 +76,7 @@ export const fraudScorerTool = {
     }
 
     // State mismatch
-    if (statedState && geoData.state) {
+    if (hasIpLocation && statedState && geoData.state) {
       const ipState    = geoData.state.toLowerCase().trim();
       const claimedState = statedState.toLowerCase().trim();
       if (!ipState.includes(claimedState) && !claimedState.includes(ipState)) {

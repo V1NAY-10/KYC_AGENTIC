@@ -2,6 +2,10 @@ import Application from '../models/Application.model.js';
 import Session from '../models/Session.model.js';
 import AgentTrace from '../models/AgentTrace.model.js';
 import User from '../models/User.model.js';
+import { findOrCreateUser } from '../utils/userSync.js';
+import { isPrivateIp } from '../utils/ip.js';
+import { scoreSignals, riskLevelFor, isGeoMismatch } from '../utils/fraudScore.js';
+import { ageFromDob } from '../utils/age.js';
 
 export const getApplications = async (req, res) => {
   try {
@@ -139,17 +143,34 @@ export const getApplicationDetail = async (req, res) => {
       ? Math.round((new Date(session.endTime) - new Date(session.startTime)) / 1000)
       : session.interviewSummary?.durationSeconds || 0;
 
-    // Derive geo risk level
+    // Replace placeholder name/email with the real Clerk profile
+    const applicantUser = application.userId?.clerkId
+      ? await findOrCreateUser(application.userId.clerkId)
+      : application.userId;
+
+    // ── Geo: a private/loopback IP (localhost, LAN) has no real location ─────
     const geo = session.geoData || {};
+    const isPrivateNetwork = isPrivateIp(session.ipAddress) || !geo.city || geo.city === 'Local';
+    const geoFlags = [
+      geo.isVPN   && 'VPN or hosting provider detected',
+      geo.isProxy && 'Proxy server detected',
+      geo.isTor   && 'Tor exit node detected',
+      !isPrivateNetwork && geo.country && geo.country !== 'India' && `IP is outside India (${geo.country})`,
+    ].filter(Boolean);
     const geoRiskLevel =
       geo.isVPN || geo.isProxy || geo.isTor ? 'high' :
-      geo.country && geo.country !== 'IN'    ? 'medium' : 'low';
+      geoFlags.length > 0                    ? 'medium' :
+      isPrivateNetwork                       ? 'unknown' : 'low';
 
-    // Fraud risk level
-    const fraudScore = session.fraudScore || 0;
-    const fraudRiskLevel =
-      fraudScore >= 60 ? 'high' :
-      fraudScore >= 30 ? 'medium' : 'low';
+    // ── Fraud: location mismatches against a private IP are noise; score each
+    //    distinct signal once (older sessions double-counted repeated checks)
+    const fraudSignals = (session.fraudSignals || [])
+      .filter(s => !(isPrivateNetwork && isGeoMismatch(s)));
+    const fraudScore = fraudSignals.length > 0 ? scoreSignals(fraudSignals) : 0;
+    const fraudRiskLevel = riskLevelFor(fraudScore);
+
+    const dobField = findField('IDENTITY_DOB', 'dateOfBirth');
+    const addressField = findField('IDENTITY_ADDRESS', 'currentAddress');
 
     res.json({
       application: {
@@ -169,9 +190,10 @@ export const getApplicationDetail = async (req, res) => {
       applicant: {
         _id:     application.userId?._id,
         // Use the KYC-extracted name first; fall back to User record only if not available
-        name:    realName || application.userId?.name || 'Unknown',
-        email:   application.userId?.email,
+        name:    realName || applicantUser?.name || 'Unknown',
+        email:   /@(local\.dev|temp\.com)$/i.test(applicantUser?.email || '') ? null : applicantUser?.email,
         clerkId: application.userId?.clerkId,
+        age:     ageFromDob(fieldValue(dobField)),
       },
 
       session: {
@@ -198,21 +220,24 @@ export const getApplicationDetail = async (req, res) => {
       })),
 
       geoRisk: {
-        ipAddress: session.ipAddress   || 'Unknown',
-        city:      geo.city            || 'Unknown',
-        state:     geo.state           || 'Unknown',
-        country:   geo.country         || 'Unknown',
-        isp:       geo.isp             || 'Unknown',
-        isVPN:     geo.isVPN           || false,
-        isProxy:   geo.isProxy         || false,
-        isTor:     geo.isTor           || false,
-        riskLevel: geoRiskLevel,
+        ipAddress:     session.ipAddress || null,
+        isPrivateNetwork,
+        city:          isPrivateNetwork ? null : geo.city    || null,
+        state:         isPrivateNetwork ? null : geo.state   || null,
+        country:       isPrivateNetwork ? null : geo.country || null,
+        isp:           isPrivateNetwork ? null : geo.isp     || null,
+        isVPN:         geo.isVPN   || false,
+        isProxy:       geo.isProxy || false,
+        isTor:         geo.isTor   || false,
+        statedAddress: fieldValue(addressField),
+        flags:         geoFlags,
+        riskLevel:     geoRiskLevel,
       },
 
       fraudIntelligence: {
         score:     fraudScore,
         riskLevel: fraudRiskLevel,
-        signals:   session.fraudSignals || [],
+        signals:   fraudSignals,
       },
 
       interviewSummary: session.interviewSummary || null,

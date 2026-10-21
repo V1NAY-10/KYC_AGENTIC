@@ -1,6 +1,6 @@
 import { authUserId } from '../utils/authUser.js';
 import Session from '../models/Session.model.js';
-import User from '../models/User.model.js';
+import { findOrCreateUser } from '../utils/userSync.js';
 import Application from '../models/Application.model.js';
 import { getRedis } from '../config/redis.js';
 import { lookupIP } from '../services/geo/ipLookup.service.js';
@@ -39,15 +39,8 @@ export const startSession = async (req, res) => {
       });
     }
 
-    // Find the user in our DB linked to this clerkId
-    let user = await User.findOne({ clerkId });
-    if (!user) {
-      user = await User.create({
-        clerkId: clerkId,
-        email: `${clerkId}@local.dev`,
-        name: 'Local Test User',
-      });
-    }
+    // Local user linked to this clerkId, with the real name/email from Clerk
+    const user = await findOrCreateUser(clerkId);
 
     // geoCapture middleware resolves asynchronously, so look up here when it hasn't landed yet
     const ipAddress = req.clientIp || req.ip;
@@ -103,6 +96,29 @@ export const getPreUploadedDocs = async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching pre-uploaded docs:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+/** DELETE /sessions/pre-documents/:docType — drop a pre-uploaded ID so it isn't attached to the next session. */
+export const removePreUploadedDoc = async (req, res) => {
+  try {
+    const { docType } = req.params;
+    if (!ID_DOC_TYPES.includes(docType)) {
+      return res.status(400).json({ error: 'docType must be "pan" or "aadhaar".' });
+    }
+
+    const redis    = getRedis();
+    const redisKey = `docs:${authUserId(req)}`;
+    const cached   = await redis.get(redisKey);
+    const docs     = cached ? JSON.parse(cached).filter(d => d.docType !== docType) : [];
+
+    if (docs.length > 0) await redis.set(redisKey, JSON.stringify(docs), 'EX', 7200); // same 2hr TTL as upload
+    else await redis.del(redisKey);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error removing pre-uploaded doc:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };

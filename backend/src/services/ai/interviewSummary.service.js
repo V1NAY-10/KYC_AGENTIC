@@ -1,4 +1,5 @@
 import { chat } from './llm.service.js';
+import { ageFromDob, todayLabel } from '../../utils/age.js';
 
 /**
  * Interview Summary Service
@@ -60,6 +61,8 @@ export async function generateInterviewSummary({
     const systemPrompt = `You are an AI loan compliance analyst. Analyze this KYC video interview and produce a structured intelligence report for the loan officer.
 
 INTERVIEW DATA:
+- Today's date: ${todayLabel()}
+- Applicant age: ${ageFromDob(collectedFields.dateOfBirth) ?? 'unknown'} years (computed from date of birth — use this, do not recalculate)
 - Language: ${language === 'hi' ? 'Hindi' : 'English'}
 - Total turns: ${turnCount}
 - Duration: ${Math.round(durationSeconds / 60)} minutes
@@ -67,7 +70,9 @@ INTERVIEW DATA:
 - Fraud signals: ${fraudSummary}
 - High-confidence fields: ${highConfidenceFields.join(', ') || 'none'}
 - Low-confidence fields: ${lowConfidenceFields.join(', ') || 'none'}
-- Applicant IP location: ${geoData.city || 'unknown'}, ${geoData.country || 'unknown'} | VPN: ${geoData.isVPN ? 'YES' : 'No'} | Proxy: ${geoData.isProxy ? 'YES' : 'No'}
+- Applicant IP location: ${geoData.city && geoData.city !== 'Local'
+    ? `${geoData.city}, ${geoData.country || 'unknown'}`
+    : 'unavailable (local/private network) — do not draw any location conclusions'} | VPN: ${geoData.isVPN ? 'YES' : 'No'} | Proxy: ${geoData.isProxy ? 'YES' : 'No'}
 
 COLLECTED FIELDS:
 ${JSON.stringify(collectedFields, null, 2)}

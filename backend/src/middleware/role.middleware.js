@@ -1,8 +1,9 @@
+import { authUserId } from '../utils/authUser.js';
 import User from '../models/User.model.js';
 
 export const isOfficer = async (req, res, next) => {
   try {
-    const clerkId = req.auth?.userId;
+    const clerkId = authUserId(req);
     if (!clerkId) {
       return res.status(401).json({ error: 'Unauthorized: No clerkId found' });
     }

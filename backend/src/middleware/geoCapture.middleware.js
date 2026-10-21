@@ -1,3 +1,4 @@
+import { authUserId } from '../utils/authUser.js';
 import { lookupIP } from '../services/geo/ipLookup.service.js';
 import GeoLog from '../models/GeoLog.model.js';
 
@@ -12,11 +13,11 @@ export const geoCaptureMiddleware = async (req, res, next) => {
       req.geoData = geoData;
       
       // If user is authenticated (via Clerk requireAuth), save to GeoLog
-      const auth = req.auth; // from @clerk/express
-      if (auth && auth.userId) {
+      const userId = authUserId(req); // from @clerk/express
+      if (userId) {
         GeoLog.create({
           userId: null, // We'll need to map clerkId to our User _id later if needed
-          clerkId: auth.userId,
+          clerkId: userId,
           ip: geoData.ip,
           city: geoData.city,
           state: geoData.state,

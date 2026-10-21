@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
+import { useAuth } from '@clerk/nextjs';
 import { useAppStore } from '@/store/useAppStore';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -16,6 +17,29 @@ interface KYCField {
   isFlagged: boolean;
   isEdited: boolean;
   isLocked?: boolean;
+  group?: string; // 'govtId' → PAN or Aadhaar, at least one required
+}
+
+// ─── Govt ID validation (server re-validates incl. Aadhaar checksum) ─────────
+
+const PAN_REGEX = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
+const AADHAAR_REGEX = /^([2-9][0-9]{11}|X{4}\s?X{4}\s?[0-9]{4})$/i;
+
+const isBlank = (v: unknown) => v === null || v === undefined || String(v).trim() === '';
+
+function validateGovtIds(fields: KYCField[]): Record<string, string> {
+  const errors: Record<string, string> = {};
+  const pan = fields.find(f => f.key === 'panNumber');
+  const aadhaar = fields.find(f => f.key === 'aadhaarNumber');
+  if (!pan && !aadhaar) return errors; // older interview format — nothing to check
+
+  const panVal = isBlank(pan?.finalValue) ? '' : String(pan?.finalValue).toUpperCase().replace(/\s/g, '');
+  const aadhaarVal = isBlank(aadhaar?.finalValue) ? '' : String(aadhaar?.finalValue).replace(/[\s-]/g, '');
+
+  if (panVal && !PAN_REGEX.test(panVal)) errors.panNumber = 'PAN must look like ABCDE1234F';
+  if (aadhaarVal && !AADHAAR_REGEX.test(aadhaarVal)) errors.aadhaarNumber = 'Aadhaar must be 12 digits';
+  if (!panVal && !aadhaarVal) errors.govtId = 'Please enter your PAN number or Aadhaar number — at least one is required.';
+  return errors;
 }
 
 // ─── Config ───────────────────────────────────────────────────────────────────
@@ -39,7 +63,7 @@ function ConfDot({ confidence }: { confidence: number }) {
 
 // ─── Single editable field row ────────────────────────────────────────────────
 
-function FieldRow({ field, onEdit }: { field: KYCField; onEdit: (key: string, value: string) => void }) {
+function FieldRow({ field, onEdit, error }: { field: KYCField; onEdit: (key: string, value: string) => void; error?: string }) {
   const [editing, setEditing] = useState(false);
   const [inputVal, setInputVal] = useState(String(field.finalValue ?? field.aiExtractedValue ?? ''));
 
@@ -55,8 +79,20 @@ function FieldRow({ field, onEdit }: { field: KYCField; onEdit: (key: string, va
   const rowClass = `pdf-field-row${field.isEdited ? ' edited' : field.isFlagged ? ' flagged' : ''}`;
 
   return (
-    <div className={rowClass}>
-      <span className="pdf-field-label">{field.label}</span>
+    <div className={rowClass} style={error ? { boxShadow: 'inset 3px 0 0 #dc2626' } : undefined}>
+      <span className="pdf-field-label">
+        {field.label}
+        {field.group === 'govtId' && (
+          <span style={{ display: 'block', fontSize: '0.6rem', color: '#64748b', fontWeight: 500, marginTop: '2px' }}>
+            PAN or Aadhaar — one required
+          </span>
+        )}
+        {error && (
+          <span style={{ display: 'block', fontSize: '0.65rem', color: '#dc2626', fontWeight: 600, marginTop: '2px' }}>
+            {error}
+          </span>
+        )}
+      </span>
 
       {editing ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -89,7 +125,7 @@ function FieldRow({ field, onEdit }: { field: KYCField; onEdit: (key: string, va
         </div>
       ) : (
         <span className="pdf-field-value" style={{ color: isEmpty ? '#94a3b8' : '#0f172a', fontStyle: isEmpty ? 'italic' : 'normal' }}>
-          {isEmpty ? 'Not provided' : String(displayValue)}
+          {isEmpty ? (field.group ? 'Not provided (optional if the other ID is given)' : 'Not provided') : String(displayValue)}
         </span>
       )}
 
@@ -130,12 +166,15 @@ type PagePhase = 'review' | 'submitting' | 'decision';
 
 export default function ReviewPage() {
   const router = useRouter();
+  const { getToken } = useAuth();
   const { sessionId, reset } = useAppStore();
 
   const [fields, setFields] = useState<KYCField[]>([]);
   const [storedSessionId, setStoredSessionId] = useState<string>('');
   const [phase, setPhase] = useState<PagePhase>('review');
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [applicationRef, setApplicationRef] = useState<string | null>(null);
   const [preDocs, setPreDocs] = useState<PreDoc[]>([]);
 
   // ── Load pre-uploaded docs from localStorage ──────────────────────────────
@@ -164,32 +203,55 @@ export default function ReviewPage() {
   // ── Edit handler ──────────────────────────────────────────────────────────
   const handleEdit = useCallback((key: string, value: string) => {
     setFields(prev => prev.map(f => f.key === key ? { ...f, finalValue: value, isEdited: true } : f));
+    setFieldErrors(prev => {
+      const next = { ...prev };
+      delete next[key];
+      delete next.govtId;
+      return next;
+    });
   }, []);
 
   // ── Submit ────────────────────────────────────────────────────────────────
   const handleSubmit = useCallback(async () => {
     setSubmitError(null);
-    setPhase('submitting');
+
+    const idErrors = validateGovtIds(fields);
+    if (Object.keys(idErrors).length > 0) {
+      setFieldErrors(idErrors);
+      setSubmitError(Object.values(idErrors)[0]);
+      return;
+    }
+
     const sid = storedSessionId || sessionId;
-    if (!sid) { setSubmitError('Session ID missing. Please restart.'); setPhase('review'); return; }
+    if (!sid) { setSubmitError('Session ID missing. Please restart.'); return; }
+
+    setPhase('submitting');
     try {
       const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
+      const token = await getToken();
       const res = await fetch(`${API_URL}/sessions/${sid}/submit-review`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         credentials: 'include',
         body: JSON.stringify({ extractedFields: fields }),
       });
+      const body = await res.json().catch(() => ({})) as {
+        error?: string; fieldErrors?: Record<string, string>; applicationRef?: string;
+      };
       if (!res.ok) {
-        const err = await res.json() as { error?: string };
-        throw new Error(err.error || 'Submission failed.');
+        if (body.fieldErrors) setFieldErrors(body.fieldErrors);
+        throw new Error(body.error || 'Submission failed.');
       }
+      setApplicationRef(body.applicationRef ?? null);
       setPhase('decision');
     } catch (err: unknown) {
       setSubmitError(err instanceof Error ? err.message : 'An unexpected error occurred.');
       setPhase('review');
     }
-  }, [fields, storedSessionId, sessionId]);
+  }, [fields, storedSessionId, sessionId, getToken]);
 
   // ── Download PDF ──────────────────────────────────────────────────────────
   const handleDownload = () => { window.print(); };
@@ -260,7 +322,7 @@ export default function ReviewPage() {
           {/* Reference chip */}
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', marginBottom: '2rem', padding: '8px 16px', borderRadius: '10px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.09)' }}>
             <span style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.4)', fontWeight: '600' }}>Reference</span>
-            <span style={{ fontSize: '0.875rem', fontFamily: 'monospace', color: 'var(--color-accent-blue)', fontWeight: '700' }}>#{refNo}</span>
+            <span style={{ fontSize: '0.875rem', fontFamily: 'monospace', color: 'var(--color-accent-blue)', fontWeight: '700' }}>{applicationRef ?? `#${refNo}`}</span>
           </div>
           <br />
           <button
@@ -458,7 +520,12 @@ export default function ReviewPage() {
                 {/* Field rows */}
                 <div>
                   {sectionFields.map(field => (
-                    <FieldRow key={field.key} field={field} onEdit={handleEdit} />
+                    <FieldRow
+                      key={field.key}
+                      field={field}
+                      onEdit={handleEdit}
+                      error={fieldErrors[field.key] ?? (field.group ? fieldErrors[field.group] : undefined)}
+                    />
                   ))}
                 </div>
               </div>

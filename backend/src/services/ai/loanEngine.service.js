@@ -82,11 +82,12 @@ function runRules(fields, fraudSignals = []) {
     reasons.push(`Fields with low extraction confidence: ${lowConfidenceFields.map(f => f.label || f.key).join(', ')}.`);
   }
 
-  // 6. Fraud signals
+  // 6. Fraud signals — these are heuristic/LLM-raised, so they route to a human
+  //    officer instead of auto-rejecting a possibly genuine applicant
   const highFraud = (fraudSignals || []).filter(s => s.severity === 'high');
   if (highFraud.length > 0) {
     flags.fraudSignals = highFraud.map(s => s.type);
-    hardReject = true;
+    manualReview = true;
     reasons.push(`High-severity fraud signal(s) detected: ${highFraud.map(s => s.description || s.type).join('; ')}.`);
   }
 
@@ -129,7 +130,7 @@ Return ONLY valid JSON:
 }`;
 
   try {
-    return await chat({ systemPrompt, userMessage: 'Assess this applicant.', json: true });
+    return await chat({ systemPrompt, userMessage: 'Assess this applicant.', json: true, lane: 'secondary' });
   } catch (err) {
     console.error('[LoanEngine] LLM assessment failed:', err.message);
     return {
@@ -171,8 +172,12 @@ export async function evaluateLoan(fields, fraudSignals, language = 'en') {
   const llm = await llmAssessment(fields, ruleResult, language);
 
   // Merge decisions — rules take precedence for manual_review
-  let finalDecision = llm.recommendation;
-  if (ruleResult.manualReview && finalDecision === 'approved') {
+  let finalDecision = ['approved', 'conditional', 'manual_review'].includes(llm.recommendation)
+    ? llm.recommendation
+    : 'manual_review';
+  if (ruleResult.flags.fraudSignals) {
+    finalDecision = 'manual_review';
+  } else if (ruleResult.manualReview && finalDecision === 'approved') {
     finalDecision = 'conditional';
   }
 

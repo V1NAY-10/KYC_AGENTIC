@@ -44,6 +44,7 @@ export default function ConsentForm() {
       });
 
       if (res.data && res.data.sessionId) {
+        sessionStorage.removeItem('kycReviewData'); // never show a previous interview's answers
         setSessionId(res.data.sessionId);
         router.push('/onboard/call');
       } else {
@@ -51,10 +52,16 @@ export default function ConsentForm() {
       }
     } catch (err: unknown) {
       console.error(err);
-      const e = err as { response?: { data?: { error?: string } } };
+      const e = err as { response?: { data?: { error?: string; code?: string } } };
       const errorMessage = e.response?.data?.error || 'Failed to start session. Please try again.';
       setError(errorMessage);
       setLoading(false);
+
+      // No PAN/Aadhaar card on file (e.g. upload expired) — send them back to upload one
+      if (e.response?.data?.code === 'ID_DOCUMENT_REQUIRED') {
+        setTimeout(() => router.push('/onboard/documents'), 2000);
+        return;
+      }
 
       if (errorMessage.includes('User profile not found')) {
         setTimeout(() => {

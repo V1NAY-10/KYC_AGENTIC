@@ -10,8 +10,10 @@
 
 const KYC_KNOWLEDGE = {
   // ── Required field groups ───────────────────────────────────────────────────
+  // A requirement is either a concrete field, or a group satisfied by ANY of its
+  // `satisfiedBy` fields (see fieldMeta). govtId = PAN or Aadhaar, at least one.
   requiredFields: {
-    personal:  ['fullName', 'dateOfBirth', 'currentAddress', 'panNumber'],
+    personal:  ['fullName', 'dateOfBirth', 'currentAddress', 'govtId'],
     financial: ['monthlyIncome', 'employerName', 'employmentYears', 'existingEMI'],
     loan:      ['loanAmount', 'loanPurpose', 'loanTenure'],
   },
@@ -21,7 +23,9 @@ const KYC_KNOWLEDGE = {
     fullName:        { label: 'Full Name',               section: 'personal',  minConfidence: 0.80, mustValidate: false },
     dateOfBirth:     { label: 'Date of Birth',           section: 'personal',  minConfidence: 0.90, mustValidate: true  },
     currentAddress:  { label: 'Current Address',         section: 'personal',  minConfidence: 0.70, mustValidate: false },
-    panNumber:       { label: 'PAN Number',              section: 'personal',  minConfidence: 0.95, mustValidate: true  },
+    govtId:          { label: 'PAN or Aadhaar Number',   section: 'personal',  minConfidence: 0.90, mustValidate: true, satisfiedBy: ['panNumber', 'aadhaarNumber'] },
+    panNumber:       { label: 'PAN Number',              section: 'personal',  minConfidence: 0.90, mustValidate: true  },
+    aadhaarNumber:   { label: 'Aadhaar Number',          section: 'personal',  minConfidence: 0.90, mustValidate: true  },
     monthlyIncome:   { label: 'Monthly Income (₹)',      section: 'financial', minConfidence: 0.80, mustValidate: false },
     employerName:    { label: 'Employer Name',           section: 'financial', minConfidence: 0.75, mustValidate: false },
     employmentYears: { label: 'Years of Employment',     section: 'financial', minConfidence: 0.80, mustValidate: false },
@@ -41,6 +45,15 @@ const KYC_KNOWLEDGE = {
     humanReviewThreshold:   0.60,    // overall decision confidence below this → manual
   },
 
+  // ── Interview flow policy ─────────────────────────────────────────────────
+  interviewPolicy: {
+    // After this many unusable answers for one field, stop re-asking: keep the best
+    // low-confidence value (or none) and flag it for the officer instead of looping.
+    maxAttemptsPerField: 3,
+    // Run the async FraudAgent when one of these is captured (each is an LLM call)
+    fraudTriggerFields: ['currentAddress', 'monthlyIncome', 'loanAmount'],
+  },
+
   // ── Fraud signal weights (0-100 scale, cumulative) ──────────────────────────
   fraudSignalWeights: {
     VPN_DETECTED:              35,
@@ -49,6 +62,7 @@ const KYC_KNOWLEDGE = {
     CITY_MISMATCH:             20,
     STATE_MISMATCH:            15,
     PAN_INVALID:               40,
+    AADHAAR_INVALID:           40,
     INCOME_IMPLAUSIBLE:        30,
     CONTRADICTION_DETECTED:    45,
     AGE_IMPOSSIBLE:            60,
@@ -59,7 +73,7 @@ const KYC_KNOWLEDGE = {
 
   // ── Planner goal definitions (priority order) ───────────────────────────────
   plannerGoals: [
-    { id: 'collect_identity',    priority: 1, requiredFields: ['fullName', 'dateOfBirth', 'currentAddress', 'panNumber'], runsAsync: false },
+    { id: 'collect_identity',    priority: 1, requiredFields: ['fullName', 'dateOfBirth', 'currentAddress', 'govtId'],    runsAsync: false },
     { id: 'verify_identity',     priority: 2, dependsOn: ['collect_identity'],                                           runsAsync: false },
     { id: 'collect_financial',   priority: 3, requiredFields: ['monthlyIncome', 'employerName', 'employmentYears', 'existingEMI'], runsAsync: false },
     { id: 'assess_fraud',        priority: 4, requiredFields: [],                                                        runsAsync: true  },
@@ -76,8 +90,43 @@ export class SemanticMemory {
     return KYC_KNOWLEDGE.requiredFields;
   }
 
+  /** Requirement keys in interview order (may include groups like govtId). */
   getAllRequiredFieldKeys() {
     return Object.values(KYC_KNOWLEDGE.requiredFields).flat();
+  }
+
+  /** Concrete fields that can satisfy a requirement — [key] for plain fields. */
+  getSatisfyingFields(requirementKey) {
+    return KYC_KNOWLEDGE.fieldMeta[requirementKey]?.satisfiedBy || [requirementKey];
+  }
+
+  /** The requirement a concrete field counts towards (panNumber → govtId). */
+  getRequirementFor(fieldKey) {
+    for (const req of this.getAllRequiredFieldKeys()) {
+      if (this.getSatisfyingFields(req).includes(fieldKey)) return req;
+    }
+    return fieldKey;
+  }
+
+  isRequirementMet(requirementKey, collectedFields = {}) {
+    return this.getSatisfyingFields(requirementKey).some(key => {
+      const val = collectedFields[key];
+      return val !== null && val !== undefined && String(val).trim() !== '';
+    });
+  }
+
+  /** Concrete fields shown on the review form / stored on the application, in order. */
+  getReviewFieldKeys() {
+    return this.getAllRequiredFieldKeys().flatMap(req => this.getSatisfyingFields(req));
+  }
+
+  /** Every concrete field the extractor may return. */
+  getExtractableFieldKeys() {
+    return this.getReviewFieldKeys();
+  }
+
+  getInterviewPolicy() {
+    return KYC_KNOWLEDGE.interviewPolicy;
   }
 
   getFieldMeta(key) {
@@ -104,10 +153,6 @@ export class SemanticMemory {
 
   // Helper: given collected fields, compute which required fields are still missing
   computeMissingFields(collectedFields = {}) {
-    const all = this.getAllRequiredFieldKeys();
-    return all.filter(key => {
-      const val = collectedFields[key];
-      return val === null || val === undefined || val === '';
-    });
+    return this.getAllRequiredFieldKeys().filter(key => !this.isRequirementMet(key, collectedFields));
   }
 }

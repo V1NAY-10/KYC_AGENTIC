@@ -6,28 +6,44 @@ import { CreditAgent } from './CreditAgent.js';
 import { DocumentAgent } from './DocumentAgent.js';
 import { ComplianceAgent } from './ComplianceAgent.js';
 import { DecisionAgent } from './DecisionAgent.js';
+import Session from '../models/Session.model.js';
 import { detectPromptInjection } from '../middleware/promptInjectionGuard.js';
 import { generateInterviewSummary } from '../services/ai/interviewSummary.service.js';
+import { withSessionLock } from '../utils/sessionLock.js';
+import { redactAadhaar } from '../utils/govtIdParser.js';
+
+const MOVE_ON_PREFIX = {
+  en: "No problem — we'll verify that from your documents later. ",
+  hi: 'कोई बात नहीं — हम इसे बाद में आपके दस्तावेज़ों से सत्यापित कर लेंगे। ',
+};
+const SYSTEM_TROUBLE_PREFIX = {
+  en: "Sorry, I'm having a little trouble on my side. ",
+  hi: 'क्षमा करें, मेरी तरफ़ थोड़ी तकनीकी दिक्कत है। ',
+};
 
 /**
  * PlannerAgent — The brain of the agentic KYC system.
  *
  * Implements the O-R-P-A-E-U-R loop:
  *   OBSERVE  → Read working memory + recent conversation
- *   REASON   → LLM decides what to do next (or fast-path deterministic)
+ *   REASON   → Deterministic goal selection (probe field first, then next missing requirement)
  *   PLAN     → Which agents to run, in what order (sync vs async)
  *   ACT      → Execute agents
  *   EVALUATE → Did we get what we needed? Any new signals?
- *   UPDATE   → Write new values to working memory + save trace
- *   REPLAN   → If extraction failed → probe; if missing fields → keep going
+ *   UPDATE   → Write new values to working memory + mirror to MongoDB + save trace
+ *   REPLAN   → If extraction failed → probe (max N attempts, then move on); if missing fields → keep going
  *
- * Key differences vs. old fixed state machine:
- *   ✓ Dynamic ordering: asks for whatever field is most needed, not a hardcoded sequence
+ * Design notes:
+ *   ✓ One LLM round-trip for extraction + one for the next question per turn —
+ *     goal selection is rule-based, which is faster and fully auditable
  *   ✓ Skips volunteered info: if user says "I earn 50k at TCS", skips BOTH questions
- *   ✓ Backtracking: re-asks any field if confidence is too low
+ *   ✓ Never dead-ends: after maxAttemptsPerField unusable answers the field is
+ *     flagged for officer review and the interview moves on
+ *   ✓ govtId requirement is met by EITHER a PAN or an Aadhaar number
  *   ✓ Async fraud: FraudAgent runs in background, never blocks user response
- *   ✓ Early credit signals: CreditAgent quick-assesses mid-call when enough data exists
+ *   ✓ Early credit signals: CreditAgent quick-assesses as soon as income + loan amount exist
  *   ✓ Injection defense: ALL transcripts screened before reaching any LLM
+ *   ✓ Callers serialize turns per session (utils/sessionLock.js)
  */
 export class PlannerAgent extends BaseAgent {
   constructor() {
@@ -52,12 +68,14 @@ export class PlannerAgent extends BaseAgent {
       : "Hi! I'm Aria, your AI loan onboarding assistant. I'll guide you through a quick KYC process — it'll take about 5 minutes. Let's get started — could you please tell me your full name as it appears on your ID?";
 
     await this.episodicMemory.appendTurn(sessionId, 'agent', greeting, { state: 'GREETING' });
-    await this.workingMemory.update(sessionId, { lastAgentAction: 'greeting_sent' });
+    const wm = await this.workingMemory.update(sessionId, { lastAgentAction: 'greeting_sent' });
 
     return {
-      question:   greeting,
-      state:      'AGENTIC',
-      stateLabel: 'Full Name',
+      question:     greeting,
+      state:        'AGENTIC',
+      stateLabel:   'Full Name',
+      currentField: wm.missingFields[0] || 'fullName',
+      progress:     this._progress(wm),
     };
   }
 
@@ -66,15 +84,21 @@ export class PlannerAgent extends BaseAgent {
   // ════════════════════════════════════════════════════════════════════════════
   async processTurn({ sessionId, transcript, session, socket, io }) {
     const turnStart = Date.now();
+    const policy    = this.semanticMemory.getInterviewPolicy();
 
     // ── OBSERVE ───────────────────────────────────────────────────────────────
     let wm = await this.workingMemory.get(sessionId);
     if (!wm) {
+      // Redis entry missing (expired/flushed) — rebuild from the MongoDB mirror
       wm = await this.workingMemory.init(sessionId, {
-        language: session.language,
-        loanType: session.loanType,
-        geoData:  session.geoData || {},
+        language:         session.language,
+        loanType:         session.loanType,
+        geoData:          session.geoData || {},
+        uploadedDocTypes: (session.documents || []).map(d => d.docType),
+        collectedFields:  this._mapToObject(session.collectedAnswers),
+        confidenceMap:    this._mapToObject(session.collectedConfidence),
       });
+      this.log('warn', 'Working memory rebuilt from MongoDB', { sessionId, collected: Object.keys(wm.collectedFields).length });
     }
 
     // Prompt injection check — BEFORE any LLM call
@@ -90,233 +114,197 @@ export class PlannerAgent extends BaseAgent {
 
       const lastMsg = await this.episodicMemory.getLastAgentMessage(sessionId);
       return {
-        question:   lastMsg?.text || 'Could you please repeat that?',
-        state:      'AGENTIC',
-        stateLabel: 'Please repeat',
-        isReprompt: true,
+        question:     lastMsg?.text || 'Could you please repeat that?',
+        state:        'AGENTIC',
+        stateLabel:   'Please repeat',
+        isReprompt:   true,
+        currentField: wm.missingFields[0] || null,
+        progress:     this._progress(wm),
       };
     }
 
-    // Load recent context
     const recentTurns = await this.episodicMemory.getRecentTurns(sessionId, 6);
     wm = await this.workingMemory.update(sessionId, { turnCount: (wm.turnCount || 0) + 1 });
 
     this.log('info', '── OBSERVE ──', {
       sessionId, turn: wm.turnCount,
-      activeGoal: wm.activeGoal,
       missing: wm.missingFields.length,
+      probeField: wm.probeField, probeCount: wm.probeCount,
       fraud: wm.fraudScore,
     });
 
-    // ── REASON ────────────────────────────────────────────────────────────────
-    const plannerDecision = await this._reason(wm, transcript, recentTurns, sessionId);
-    const targetField     = plannerDecision.targetField;
+    // ── REASON (deterministic) ────────────────────────────────────────────────
+    const targetField = this._chooseTarget(wm);
 
-    this.log('info', '── REASON ──', {
-      sessionId, targetField,
-      agentsToRun: plannerDecision.agentsToRun,
-      reasoning:   plannerDecision.reasoning,
-    });
-
-    // ── PLAN ──────────────────────────────────────────────────────────────────
-    const runFraudAsync     = plannerDecision.agentsToRun.includes('fraud');
-    const runCreditQuick    = plannerDecision.agentsToRun.includes('credit');
-    const runDocumentVerify = plannerDecision.agentsToRun.includes('document') || wm.missingFields.length === 0;
-    const shouldComplete    = plannerDecision.shouldComplete || (wm.missingFields.length === 0 && !runDocumentVerify);
-
-    // ── ACT (synchronous: extraction + question generation) ───────────────────
-    let extraction = { extractedValue: null, confidence: 0, isValid: true, allExtracted: [], probeRequired: false, probeReason: null };
-
-    if (transcript && targetField) {
-      extraction = await this.identityAgent.run({
-        transcript,
-        targetField,
-        collectedFields: wm.collectedFields,
-        language:        wm.language,
-        sessionId,
-      });
+    if (!targetField) {
+      return this._handleDocumentAndClose(session, sessionId, wm, io, transcript);
     }
 
-    // ── EVALUATE: did extraction succeed? ────────────────────────────────────
+    this.log('info', '── REASON ──', { sessionId, targetField });
+
+    // ── ACT (synchronous: extraction) ─────────────────────────────────────────
+    const hadIncomeAndLoan = Boolean(wm.collectedFields.monthlyIncome && wm.collectedFields.loanAmount);
+    const extraction = await this.identityAgent.run({
+      transcript,
+      targetField,
+      collectedFields: wm.collectedFields,
+      language:        wm.language,
+      sessionId,
+    });
+
+    // ── EVALUATE ──────────────────────────────────────────────────────────────
+    const extractedField    = extraction.extractedField || targetField;
+    const systemError       = extraction.probeReason === 'Could not process your response' && extraction.confidence === 0;
     const extractionSuccess = extraction.extractedValue !== null &&
                               extraction.confidence >= 0.60       &&
                               extraction.isValid;
-    const needsProbe = extraction.probeRequired || !extractionSuccess;
 
     // ── UPDATE MEMORY (primary field) ─────────────────────────────────────────
-    if (extractionSuccess && targetField) {
-      wm = await this.workingMemory.setField(
-        sessionId, targetField, extraction.extractedValue, extraction.confidence
-      );
+    let gaveUp = false;
+    if (extractionSuccess) {
+      wm = await this.workingMemory.setField(sessionId, extractedField, extraction.extractedValue, extraction.confidence);
+    } else if (!systemError) {
+      // An LLM outage is not the user's fault — only real unusable answers count
+      wm = await this.workingMemory.recordFailedAttempt(sessionId, targetField);
+
+      if (wm.probeCount >= policy.maxAttemptsPerField) {
+        gaveUp = true;
+        if (extraction.extractedValue !== null && extraction.isValid) {
+          // Usable but low confidence — keep it, the review page flags it
+          wm = await this.workingMemory.setField(sessionId, extractedField, extraction.extractedValue, extraction.confidence);
+        } else {
+          wm = await this.workingMemory.skipField(sessionId, targetField, extraction.probeReason || extraction.validationNote || 'No usable answer');
+        }
+        this.log('warn', 'Max attempts reached — moving on', { sessionId, targetField, attempts: policy.maxAttemptsPerField });
+      }
     }
 
     // UPDATE MEMORY (bonus fields volunteered in same answer)
     for (const extra of (extraction.allExtracted || [])) {
-      if (!wm.collectedFields[extra.field]) { // Only add if not already collected
-        wm = await this.workingMemory.setField(sessionId, extra.field, extra.value, extra.confidence);
-        this.log('info', 'Bonus field captured', { sessionId, field: extra.field, confidence: extra.confidence });
-      }
+      const requirement = this.semanticMemory.getRequirementFor(extra.field);
+      if (wm.collectedFields[extra.field] || !wm.missingFields.includes(requirement)) continue;
+      wm = await this.workingMemory.setField(sessionId, extra.field, extra.value, extra.confidence);
+      this.log('info', 'Bonus field captured', { sessionId, field: extra.field, confidence: extra.confidence });
     }
 
-    // Re-read updated working memory
-    wm = await this.workingMemory.get(sessionId);
-
     // ── ACT ASYNC: FraudAgent (fire and forget) ───────────────────────────────
+    // Only when a fraud-relevant fact lands (geo vs address, income plausibility, loan size)
+    const capturedNow   = [extractionSuccess ? extractedField : null, ...(extraction.allExtracted || []).map(e => e.field)];
+    const runFraudAsync = capturedNow.some(f => policy.fraudTriggerFields.includes(f));
     if (runFraudAsync) {
-      this._runFraudAsync(sessionId, wm, transcript, session.geoData).catch(err =>
+      this._runFraudAsync(sessionId, wm, redactAadhaar(transcript), session.geoData).catch(err =>
         this.log('error', 'Async FraudAgent crashed', { sessionId, error: err.message })
       );
     }
 
-    // ── ACT: Quick credit check mid-call ─────────────────────────────────────
-    if (runCreditQuick && wm.collectedFields.monthlyIncome && wm.collectedFields.loanAmount) {
+    // ── ACT: Quick credit check as soon as income + loan amount exist ─────────
+    if (!hadIncomeAndLoan && wm.collectedFields.monthlyIncome && wm.collectedFields.loanAmount) {
       const quickCheck = this.creditAgent.quickAssess(wm.collectedFields);
       if (quickCheck.hasIssues) {
         for (const flag of quickCheck.earlyFlags) {
-          await this.workingMemory.addFraudSignal(sessionId, { ...flag, weight: 10 });
+          wm = (await this.workingMemory.addFraudSignal(sessionId, { ...flag, weight: 10 })) || wm;
         }
         this.log('warn', 'Early credit flags detected', { sessionId, flags: quickCheck.earlyFlags });
       }
     }
 
-    // ── REPLAN: Document verify or all fields done ────────────────────────────
-    if (wm.missingFields.length === 0 || runDocumentVerify) {
-      return await this._handleDocumentAndClose(session, sessionId, wm, io, socket);
+    // ── REPLAN: everything collected → close ──────────────────────────────────
+    if (wm.missingFields.length === 0) {
+      return this._handleDocumentAndClose(session, sessionId, wm, io, transcript);
     }
 
     // ── DECIDE NEXT QUESTION ──────────────────────────────────────────────────
-    const nextField = needsProbe ? targetField : wm.missingFields[0];
-
-    if (!nextField) {
-      return await this._handleDocumentAndClose(session, sessionId, wm, io, socket);
-    }
+    const reAsk     = !extractionSuccess && !gaveUp && wm.missingFields.includes(targetField);
+    const nextField = reAsk ? targetField : wm.missingFields[0];
 
     const convResult = await this.conversationAgent.run({
-      targetField: nextField,
-      collectedFields: wm.collectedFields,
-      language: wm.language,
+      targetField:      nextField,
+      collectedFields:  wm.collectedFields,
+      language:         wm.language,
       recentTurns,
-      probeReason: needsProbe ? (extraction.probeReason || extraction.validationNote) : null,
+      probeReason:      reAsk ? (extraction.probeReason || extraction.validationNote || 'The answer was unclear') : null,
+      uploadedDocTypes: wm.uploadedDocTypes || [],
       sessionId,
     });
 
-    // ── UPDATE: Save transcript turns ─────────────────────────────────────────
-    await this.episodicMemory.appendTurn(sessionId, 'user',  transcript,          { state: 'AGENTIC' });
-    await this.episodicMemory.appendTurn(sessionId, 'agent', convResult.question,  { state: 'AGENTIC' });
+    const lang = wm.language === 'hi' ? 'hi' : 'en';
+    const question = (gaveUp ? MOVE_ON_PREFIX[lang] : systemError ? SYSTEM_TROUBLE_PREFIX[lang] : '') + convResult.question;
 
-    // ── UPDATE: Save decision trace ───────────────────────────────────────────
-    await this.decisionMemory.saveTrace(sessionId, {
+    // ── UPDATE: persist transcript + mirror collected state (one write) ───────
+    await this._persistTurn(sessionId, wm, transcript, question);
+
+    // Decision trace is audit-only — never delay the user's reply for it
+    this.decisionMemory.saveTrace(sessionId, {
       turn:             wm.turnCount,
+      plannerReasoning: reAsk ? `re-ask ${targetField} (attempt ${wm.probeCount + 1})` : gaveUp ? `gave up on ${targetField}` : `next: ${nextField}`,
       agentsInvoked:    ['IdentityAgent', 'ConversationAgent', runFraudAsync ? 'FraudAgent(async)' : null].filter(Boolean),
-      fieldsExtracted:  targetField ? new Map([[targetField, extraction.extractedValue]]) : new Map(),
-      confidenceScores: targetField ? new Map([[targetField, extraction.confidence]])     : new Map(),
-      activeGoal:       wm.activeGoal,
+      fieldsExtracted:  new Map([[extractedField, extraction.extractedValue]]),
+      confidenceScores: new Map([[extractedField, extraction.confidence]]),
+      activeGoal:       targetField,
       nextGoal:         nextField,
       workingMemorySnapshot: {
         collectedCount: Object.keys(wm.collectedFields).length,
         missingCount:   wm.missingFields.length,
+        skipped:        (wm.skippedFields || []).map(s => s.field),
         fraudScore:     wm.fraudScore,
         turnCount:      wm.turnCount,
       },
-    });
+    }).catch(() => {});
 
     const durationMs = Date.now() - turnStart;
-    this.log('info', '── TURN COMPLETE ──', { sessionId, durationMs, nextField, probed: needsProbe });
+    this.log('info', '── TURN COMPLETE ──', { sessionId, durationMs, nextField, probed: reAsk, gaveUp });
 
     return {
-      question:       convResult.question,
+      question,
       state:          'AGENTIC',
       stateLabel:     this.semanticMemory.getFieldMeta(nextField)?.label || nextField,
+      currentField:   nextField,
+      progress:       this._progress(wm),
       extractedValue: extraction.extractedValue,
       confidence:     extraction.confidence,
       fraudSignals:   [],
-      probeRequired:  needsProbe,
+      probeRequired:  reAsk,
+      isReprompt:     reAsk,
       missingFields:  wm.missingFields,
     };
   }
 
   // ════════════════════════════════════════════════════════════════════════════
-  // PRIVATE: REASON — LLM or fast-path decision on what to do next
+  // PRIVATE: REASON — keep probing the current field, else next missing requirement
   // ════════════════════════════════════════════════════════════════════════════
-  async _reason(wm, transcript, recentTurns, sessionId) {
-    // Fast-path: early turns just follow field order (saves LLM call + latency)
-    if (wm.turnCount <= 2 || wm.missingFields.length > 8) {
-      const targetField = wm.missingFields[0];
-      return {
-        targetField,
-        agentsToRun: ['identity', 'conversation'],
-        shouldComplete: false,
-        reasoning: 'fast-path: early turn, sequential ordering',
-      };
-    }
+  _chooseTarget(wm) {
+    if (wm.probeField && wm.missingFields.includes(wm.probeField)) return wm.probeField;
+    return wm.missingFields[0] || null;
+  }
 
-    // Fast-path: no missing fields — go straight to close
-    if (wm.missingFields.length === 0) {
-      return {
-        targetField: null,
-        agentsToRun: [],
-        shouldComplete: true,
-        reasoning: 'fast-path: all fields collected, closing call',
-      };
-    }
+  _progress(wm) {
+    const total = this.semanticMemory.getAllRequiredFieldKeys().length;
+    return { completed: total - wm.missingFields.length, total, missing: wm.missingFields };
+  }
 
-    const collected = Object.keys(wm.collectedFields);
-    const recentCtx = recentTurns.slice(-3).map(t => `${t.role}: ${t.text}`).join('\n');
+  _mapToObject(value) {
+    if (!value) return {};
+    if (value instanceof Map) return Object.fromEntries(value);
+    return { ...value };
+  }
 
-    const systemPrompt = `You are the Planner for an AI loan KYC interview system.
-
-CURRENT STATE:
-- Turn number:     ${wm.turnCount}
-- Collected fields (${collected.length}): ${JSON.stringify(collected)}
-- Missing fields  (${wm.missingFields.length}): ${JSON.stringify(wm.missingFields)}
-- Fraud score:    ${wm.fraudScore}/100
-- Active goal:    ${wm.activeGoal}
-
-USER'S LATEST ANSWER: "${transcript}"
-
-RECENT CONVERSATION:
-${recentCtx || '(early in conversation)'}
-
-INSTRUCTIONS:
-1. Pick the BEST next field to ask from the missing list (priority: identity > financial > loan)
-2. Did the user volunteer data for ANY other missing field in this answer?
-3. Should FraudAgent run async? (yes if fraud score > 20 or you detect a contradiction)
-4. Should CreditAgent quick-check? (yes if both income AND loanAmount are now collected)
-5. Is the call complete? (only if missingFields will be empty AFTER processing this turn)
-
-Return ONLY valid JSON:
-{
-  "targetField": "fieldKey from missing list or null",
-  "agentsToRun": ["identity","conversation"],
-  "shouldComplete": false,
-  "reasoning": "one sentence"
-}
-
-Valid agentsToRun values: "identity", "conversation", "fraud", "credit"
-
-DO NOT include "document" — document upload is handled separately after the call.`;
+  async _persistTurn(sessionId, wm, userText, agentText) {
+    const now = new Date();
+    const turns = [];
+    if (userText)  turns.push({ role: 'user',  text: redactAadhaar(userText), state: 'AGENTIC', timestamp: now });
+    if (agentText) turns.push({ role: 'agent', text: agentText, state: 'AGENTIC', timestamp: new Date(now.getTime() + 1) });
 
     try {
-      const result = await this.callLLM({
-        systemPrompt,
-        userMessage: `Plan turn ${wm.turnCount}`,
-        json: true,
+      await Session.updateOne({ _id: sessionId }, {
+        $push: { transcript: { $each: turns } },
+        $set: {
+          agentState:          'AGENTIC',
+          collectedAnswers:    wm.collectedFields,
+          collectedConfidence: wm.confidenceMap,
+        },
       });
-
-      // Validate targetField is actually in missing list
-      if (result.targetField && !wm.missingFields.includes(result.targetField)) {
-        result.targetField = wm.missingFields[0];
-      }
-
-      return result;
     } catch (err) {
-      this.log('warn', 'Planner REASON LLM failed — using deterministic fallback', { sessionId, error: err.message });
-      return {
-        targetField:    wm.missingFields[0] || null,
-        agentsToRun:    ['identity', 'conversation'],
-        shouldComplete: wm.missingFields.length === 0,
-        reasoning:      'fallback: sequential field ordering',
-      };
+      this.log('error', 'Failed to persist turn', { sessionId, error: err.message });
     }
   }
 
@@ -333,9 +321,14 @@ DO NOT include "document" — document upload is handled separately after the ca
       existingSignals: wm.fraudSignals || [],
     });
 
-    await this.workingMemory.update(sessionId, {
-      fraudScore:  fraudResult.fraudScore,
-      fraudSignals: fraudResult.signals,
+    // Write back under the session lock so it can't clobber a concurrent turn
+    await withSessionLock(sessionId, async () => {
+      const current = await this.workingMemory.get(sessionId);
+      if (!current) return;
+      await this.workingMemory.update(sessionId, {
+        fraudScore:   Math.max(current.fraudScore || 0, fraudResult.fraudScore),
+        fraudSignals: this._dedupeSignals([...(current.fraudSignals || []), ...fraudResult.signals]),
+      });
     });
 
     if (fraudResult.riskLevel === 'high') {
@@ -343,10 +336,20 @@ DO NOT include "document" — document upload is handled separately after the ca
     }
   }
 
+  _dedupeSignals(signals) {
+    const seen = new Set();
+    return signals.filter(s => {
+      const key = `${s.type}|${s.field || ''}|${s.description || ''}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
   // ════════════════════════════════════════════════════════════════════════════
-  // PRIVATE: Call completion — no document step (docs uploaded on review page)
+  // PRIVATE: Call completion — no document step (docs uploaded before the call)
   // ════════════════════════════════════════════════════════════════════════════
-  async _handleDocumentAndClose(session, sessionId, wm, io, socket) {
+  async _handleDocumentAndClose(session, sessionId, wm, io, lastUserText) {
     // ── Compliance gate ───────────────────────────────────────────────────────
     const complianceResult = await this.complianceAgent.run({
       sessionId,
@@ -354,6 +357,7 @@ DO NOT include "document" — document upload is handled separately after the ca
       confidenceMap:   wm.confidenceMap,
       consentData:     session.consentData,
       fraudScore:      wm.fraudScore,
+      skippedFields:   wm.skippedFields || [],
     });
 
     // If not compliant and there are still missing fields, keep asking
@@ -363,39 +367,53 @@ DO NOT include "document" — document upload is handled separately after the ca
       });
       const nextField  = wm.missingFields[0];
       const convResult = await this.conversationAgent.run({
-        targetField:     nextField,
-        collectedFields: wm.collectedFields,
-        language:        wm.language,
+        targetField:      nextField,
+        collectedFields:  wm.collectedFields,
+        language:         wm.language,
+        uploadedDocTypes: wm.uploadedDocTypes || [],
         sessionId,
       });
+      await this._persistTurn(sessionId, wm, lastUserText, convResult.question);
       return {
-        question:   convResult.question,
-        state:      'AGENTIC',
-        stateLabel: this.semanticMemory.getFieldMeta(nextField)?.label || nextField,
+        question:     convResult.question,
+        state:        'AGENTIC',
+        stateLabel:   this.semanticMemory.getFieldMeta(nextField)?.label || nextField,
+        currentField: nextField,
+        progress:     this._progress(wm),
       };
     }
 
     // ── Build extracted fields for frontend review ────────────────────────────
-    const allFieldKeys    = this.semanticMemory.getAllRequiredFieldKeys();
-    const extractedFields = allFieldKeys.map(key => {
-      const meta = this.semanticMemory.getFieldMeta(key);
-      const conf = wm.confidenceMap[key] || 0;
-      return {
-        key,
-        label:            meta.label,
-        section:          meta.section,
-        aiExtractedValue: wm.collectedFields[key] ?? null,
-        finalValue:       wm.collectedFields[key] ?? null,
-        confidence:       conf,
-        isFlagged:        conf < (meta.minConfidence || 0.75),
-        isEdited:         false,
-        source:           'verbal',
-      };
+    const skipped        = new Set((wm.skippedFields || []).map(s => s.field));
+    const extractedFields = this.semanticMemory.getAllRequiredFieldKeys().flatMap(requirement => {
+      const fieldKeys = this.semanticMemory.getSatisfyingFields(requirement);
+      const isGroup   = fieldKeys.length > 1;
+      const groupMet  = this.semanticMemory.isRequirementMet(requirement, wm.collectedFields);
+
+      return fieldKeys.map(key => {
+        const meta  = this.semanticMemory.getFieldMeta(key);
+        const value = wm.collectedFields[key] ?? null;
+        const conf  = wm.confidenceMap[key] || 0;
+        // In a group (PAN | Aadhaar) an empty alternative is fine once the other is present
+        const emptyButCovered = isGroup && value === null && groupMet;
+        return {
+          key,
+          label:            meta.label,
+          section:          meta.section,
+          aiExtractedValue: value,
+          finalValue:       value,
+          confidence:       conf,
+          isFlagged:        !emptyButCovered && (skipped.has(requirement) || conf < (meta.minConfidence || 0.75)),
+          isEdited:         false,
+          source:           'verbal',
+          ...(isGroup ? { group: requirement } : {}),
+        };
+      });
     });
 
     // ── Closing message (spoken by Aria) ──────────────────────────────────────
     const firstName = wm.collectedFields.fullName
-      ? String(wm.collectedFields.fullName).split(' ')[0]
+      ? String(wm.collectedFields.fullName).trim().split(/\s+/)[0]
       : null;
 
     const closingMessage = wm.language === 'hi'
@@ -404,21 +422,35 @@ DO NOT include "document" — document upload is handled separately after the ca
 
     // ── Save session completion to MongoDB ────────────────────────────────────
     try {
-      const Session = (await import('../models/Session.model.js')).default;
-      await Session.findByIdAndUpdate(sessionId, {
-        status:           'completed',
-        endTime:          new Date(),
-        agentState:       'CALL_COMPLETE',
-        extractedAnswers: extractedFields,
-        collectedAnswers: new Map(Object.entries(wm.collectedFields)),
-        fraudScore:       wm.fraudScore || 0,
+      const now = new Date();
+      const turns = [];
+      if (lastUserText) turns.push({ role: 'user', text: redactAadhaar(lastUserText), state: 'AGENTIC', timestamp: now });
+      turns.push({ role: 'agent', text: closingMessage, state: 'CALL_COMPLETE', timestamp: new Date(now.getTime() + 1) });
+
+      await Session.updateOne({ _id: sessionId }, {
+        $push: { transcript: { $each: turns } },
+        $set: {
+          status:              'completed',
+          endTime:             now,
+          agentState:          'CALL_COMPLETE',
+          extractedAnswers:    extractedFields,
+          collectedAnswers:    wm.collectedFields,
+          collectedConfidence: wm.confidenceMap,
+          skippedFields:       wm.skippedFields || [],
+          complianceWarnings:  complianceResult.warnings,
+          fraudScore:          wm.fraudScore || 0,
+          fraudSignals:        (wm.fraudSignals || []).map(s => ({
+            type: s.type, description: s.description, field: s.field,
+            severity: ['low', 'medium', 'high'].includes(s.severity) ? s.severity : 'medium',
+          })),
+        },
       });
     } catch (err) {
       this.log('error', 'Failed to update session status', { sessionId, error: err.message });
     }
 
     // ── Save final trace ──────────────────────────────────────────────────────
-    await this.decisionMemory.saveTrace(sessionId, {
+    this.decisionMemory.saveTrace(sessionId, {
       turn:          wm.turnCount,
       agentsInvoked: ['ComplianceAgent'],
       activeGoal:    'compliance_check',
@@ -426,16 +458,17 @@ DO NOT include "document" — document upload is handled separately after the ca
       workingMemorySnapshot: {
         collectedCount: Object.keys(wm.collectedFields).length,
         missingCount:   0,
+        skipped:        (wm.skippedFields || []).map(s => s.field),
         fraudScore:     wm.fraudScore,
         turnCount:      wm.turnCount,
       },
-    });
+    }).catch(() => {});
 
     // Emit call:complete to frontend (user reviews extracted data on review page)
     io.to(sessionId).emit('call:complete', { sessionId, extractedFields });
 
-    this.log('info', '✅ Call complete — no document step, user goes to review page', {
-      sessionId, fields: allFieldKeys.length, fraud: wm.fraudScore,
+    this.log('info', '✅ Call complete — user goes to review page', {
+      sessionId, fields: extractedFields.length, skipped: (wm.skippedFields || []).length, fraud: wm.fraudScore,
     });
 
     // ── Generate interview summary async (non-blocking) ───────────────────────
@@ -444,10 +477,12 @@ DO NOT include "document" — document upload is handled separately after the ca
     );
 
     return {
-      question:   closingMessage,
-      state:      'CALL_COMPLETE',
-      stateLabel: 'Complete',
-      isComplete: true,
+      question:     closingMessage,
+      state:        'CALL_COMPLETE',
+      stateLabel:   'Complete',
+      isComplete:   true,
+      currentField: null,
+      progress:     this._progress(wm),
     };
   }
 
@@ -455,10 +490,6 @@ DO NOT include "document" — document upload is handled separately after the ca
   // PRIVATE: Generate interview summary async (fires after call:complete)
   // ════════════════════════════════════════════════════════════════════════════
   async _generateSummaryAsync(sessionId, session, wm) {
-    // ── Read transcript directly from MongoDB Session.transcript[] ───────────
-    // (episodicMemory.getHistory() was returning 0 turns — transcript is stored
-    //  in Session.transcript[], not in a separate episodic store)
-    const Session = (await import('../models/Session.model.js')).default;
     const sessionDoc = await Session.findById(sessionId).select('transcript startTime geoData').lean();
 
     const turns = (sessionDoc?.transcript || []).map(t => ({
@@ -486,7 +517,6 @@ DO NOT include "document" — document upload is handled separately after the ca
       language:        wm.language || 'en',
     });
 
-    // Save to MongoDB
     await Session.findByIdAndUpdate(sessionId, { interviewSummary: summary });
     this.log('info', '📋 Interview summary saved', {
       sessionId,

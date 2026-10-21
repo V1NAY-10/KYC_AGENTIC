@@ -98,7 +98,7 @@ Return ONLY valid JSON:
 If no issues found: return { "signals": [], "additionalScore": 0 }`;
 
     try {
-      return await this.callLLM({ systemPrompt, userMessage: 'Analyze for fraud signals.', json: true });
+      return await this.callLLM({ systemPrompt, userMessage: 'Analyze for fraud signals.', json: true, lane: 'secondary' });
     } catch (err) {
       this.log('error', 'Data consistency LLM failed', { sessionId, error: err.message });
       return { signals: [], additionalScore: 0 };

@@ -1,3 +1,4 @@
+import { authUserId } from '../utils/authUser.js';
 import express from 'express';
 import { requireAuth } from '@clerk/express';
 import User from '../models/User.model.js';
@@ -6,7 +7,7 @@ const router = express.Router();
 
 router.post('/register-officer', requireAuth(), async (req, res) => {
   try {
-    const clerkId = req.auth.userId;
+    const clerkId = authUserId(req);
     if (!clerkId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -33,7 +34,7 @@ router.post('/register-officer', requireAuth(), async (req, res) => {
 
 router.get('/me', requireAuth(), async (req, res) => {
   try {
-    const clerkId = req.auth.userId;
+    const clerkId = authUserId(req);
     const user = await User.findOne({ clerkId });
     if (!user) {
       return res.status(404).json({ error: 'User not found in local DB' });

@@ -1,4 +1,4 @@
-import { chat } from '../../services/ai/llm.service.js';
+import { chat, isRetryableLLMError, retryAfterMs } from '../../services/ai/llm.service.js';
 import { WorkingMemory } from '../../memory/WorkingMemory.js';
 import { EpisodicMemory } from '../../memory/EpisodicMemory.js';
 import { SemanticMemory } from '../../memory/SemanticMemory.js';
@@ -6,7 +6,8 @@ import { DecisionMemory } from '../../memory/DecisionMemory.js';
 import { ToolRegistry } from '../../tools/ToolRegistry.js';
 
 const MAX_RETRIES  = 3;
-const RETRY_DELAYS = [0, 1000, 3000]; // ms between retries
+const RETRY_DELAYS = [0, 400, 1200]; // ms between retries — kept short, the user is waiting on a live call
+const MAX_RATE_LIMIT_WAIT_MS = 2500;
 
 /**
  * BaseAgent — Abstract base class for all KYC agents.
@@ -49,34 +50,40 @@ export class BaseAgent {
    *
    * Retry strategy:
    *   Attempt 1: immediate
-   *   Attempt 2: after 1s
-   *   Attempt 3: after 3s
+   *   Attempt 2: after 400ms
+   *   Attempt 3: after 1.2s
+   *   Non-retryable errors (401/403/404/400) fail immediately
    *   Fallback: throws the last error (caller handles graceful degradation)
    *
    * @param {object} options
    * @param {string} options.systemPrompt
    * @param {string} options.userMessage
    * @param {boolean} [options.json=true]
+   * @param {'primary'|'secondary'} [options.lane='primary'] - model lane (see llm.service chat())
    * @returns {Promise<object|string>}
    */
-  async callLLM({ systemPrompt, userMessage, json = true }) {
+  async callLLM({ systemPrompt, userMessage, json = true, lane = 'primary' }) {
     let lastError;
 
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       if (attempt > 0) {
-        await new Promise(res => setTimeout(res, RETRY_DELAYS[attempt]));
+        // Rate limited → wait what the provider asked (capped), else the normal backoff
+        const asked = lastError?.status === 429 ? retryAfterMs(lastError) : null;
+        const delay = asked ? Math.min(asked + 100, MAX_RATE_LIMIT_WAIT_MS) : RETRY_DELAYS[attempt];
+        await new Promise(res => setTimeout(res, delay));
         this.log('warn', `LLM retry attempt ${attempt + 1}/${MAX_RETRIES}`);
       }
 
       try {
-        return await chat({ systemPrompt, userMessage, json });
+        return await chat({ systemPrompt, userMessage, json, lane });
       } catch (err) {
         lastError = err;
         this.log('error', `LLM call failed (attempt ${attempt + 1})`, { error: err.message });
+        if (!isRetryableLLMError(err)) break;
       }
     }
 
-    this.log('error', 'All LLM retries exhausted', { error: lastError?.message });
+    this.log('error', 'LLM call gave up', { error: lastError?.message });
     throw lastError;
   }
 

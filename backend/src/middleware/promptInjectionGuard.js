@@ -26,7 +26,7 @@ const INJECTION_PATTERNS = [
 const SUSPICIOUS_PATTERNS = [
   /[<>{}\[\]]{4,}/,           // Many special chars (possible encoded payload)
   /base64|eval\s*\(|exec\s*\(/i,
-  /(script|iframe|onclick)/i, // HTML/JS injection attempt
+  /<\s*(script|iframe)\b|\bon(click|error|load)\s*=/i, // HTML/JS injection attempt (bare "script" matched "subscription")
 ];
 
 /**

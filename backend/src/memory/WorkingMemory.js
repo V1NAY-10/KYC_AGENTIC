@@ -21,16 +21,18 @@ const semanticMemory = new SemanticMemory();
  *   activeGoal:      string      — current goal being worked on
  *   collectedFields: object      — { fieldKey: value }
  *   confidenceMap:   object      — { fieldKey: 0.0-1.0 }
- *   missingFields:   string[]    — fields not yet collected
+ *   missingFields:   string[]    — requirements not yet met (e.g. 'govtId' = PAN or Aadhaar)
+ *   skippedFields:   array       — [{ field, reason }] given up on after max attempts (officer review)
  *   fraudScore:      number      — 0-100 composite score
  *   fraudSignals:    array       — all fraud signals raised
  *   turnCount:       number      — how many turns have passed
  *   lastAgentAction: string|null
  *   probeField:      string|null — field being re-asked
- *   probeCount:      number      — how many times we've probed this field
+ *   probeCount:      number      — failed attempts so far on probeField
  *   language:        string      — 'en' | 'hi'
  *   loanType:        string
  *   geoData:         object
+ *   uploadedDocTypes: string[]   — ID documents uploaded before the call ('pan' | 'aadhaar')
  * }
  */
 export class WorkingMemory {
@@ -52,28 +54,32 @@ export class WorkingMemory {
   /**
    * Initialize working memory for a new session.
    * Safe to call multiple times — won't overwrite an existing session.
+   * Pass collectedFields/confidenceMap to rebuild state after a Redis loss
+   * (they are mirrored to MongoDB every turn).
    */
   async init(sessionId, data = {}) {
     const existing = await this.get(sessionId);
     if (existing) return existing;
 
-    const allRequired = semanticMemory.getAllRequiredFieldKeys();
+    const collectedFields = data.collectedFields || {};
     const state = {
       goals: semanticMemory.getGoals().map(g => g.id),
       completedGoals: [],
       activeGoal: 'collect_identity',
-      collectedFields: {},
-      confidenceMap: {},
-      missingFields: [...allRequired],
+      collectedFields,
+      confidenceMap: data.confidenceMap || {},
+      missingFields: semanticMemory.computeMissingFields(collectedFields),
+      skippedFields: [],
       fraudScore: 0,
       fraudSignals: [],
-      turnCount: 0,
+      turnCount: data.turnCount || 0,
       lastAgentAction: null,
       probeField: null,
       probeCount: 0,
       language: data.language || 'en',
       loanType: data.loanType || 'personal',
       geoData: data.geoData || {},
+      uploadedDocTypes: data.uploadedDocTypes || [],
     };
 
     await this.redis.setex(KEY(sessionId), TTL_SECONDS, JSON.stringify(state));
@@ -97,15 +103,55 @@ export class WorkingMemory {
     const current = await this.get(sessionId);
     if (!current) throw new Error(`WorkingMemory not initialized for session: ${sessionId}`);
 
+    // panNumber / aadhaarNumber also satisfy the govtId requirement
+    const requirement = semanticMemory.getRequirementFor(key);
+
     current.collectedFields[key] = value;
     current.confidenceMap[key]   = confidence;
-    current.missingFields = current.missingFields.filter(f => f !== key);
+    current.missingFields = current.missingFields.filter(f => f !== key && f !== requirement);
+    current.skippedFields = (current.skippedFields || []).filter(s => s.field !== key && s.field !== requirement);
 
     // Reset probe state if we just successfully collected the probe field
-    if (current.probeField === key) {
+    if (current.probeField === key || current.probeField === requirement) {
       current.probeField = null;
       current.probeCount = 0;
     }
+
+    await this.redis.setex(KEY(sessionId), TTL_SECONDS, JSON.stringify(current));
+    return current;
+  }
+
+  /**
+   * Count an unusable answer for a field. Returns the updated state;
+   * state.probeCount is the number of consecutive failures on that field.
+   */
+  async recordFailedAttempt(sessionId, field) {
+    const current = await this.get(sessionId);
+    if (!current) throw new Error(`WorkingMemory not initialized for session: ${sessionId}`);
+
+    if (current.probeField === field) {
+      current.probeCount = (current.probeCount || 0) + 1;
+    } else {
+      current.probeField = field;
+      current.probeCount = 1;
+    }
+
+    await this.redis.setex(KEY(sessionId), TTL_SECONDS, JSON.stringify(current));
+    return current;
+  }
+
+  /**
+   * Stop asking for a field after repeated failures so the interview never dead-ends.
+   * The field stays empty (or holds a low-confidence value) and is flagged for the officer.
+   */
+  async skipField(sessionId, field, reason) {
+    const current = await this.get(sessionId);
+    if (!current) throw new Error(`WorkingMemory not initialized for session: ${sessionId}`);
+
+    current.missingFields = current.missingFields.filter(f => f !== field);
+    current.skippedFields = [...(current.skippedFields || []).filter(s => s.field !== field), { field, reason }];
+    current.probeField = null;
+    current.probeCount = 0;
 
     await this.redis.setex(KEY(sessionId), TTL_SECONDS, JSON.stringify(current));
     return current;

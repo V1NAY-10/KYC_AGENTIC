@@ -209,7 +209,7 @@ Return ONLY valid JSON:
 }`;
 
     try {
-      return await this.callLLM({ systemPrompt, userMessage: 'Assess this applicant.', json: true });
+      return await this.callLLM({ systemPrompt, userMessage: 'Assess this applicant.', json: true, lane: 'secondary' });
     } catch (err) {
       this.log('error', 'LLM credit assessment failed, using safe fallback', { error: err.message });
       return {

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAppStore } from '@/store/useAppStore';
 import api from '@/lib/api';
@@ -67,6 +67,28 @@ export default function DocumentUpload() {
   const setSlot = (type: DocType, updates: Partial<DocSlot>) => {
     setSlots(prev => prev.map(s => (s.type === type ? { ...s, ...updates } : s)));
   };
+
+  // ── Restore uploads already held by the server (page refresh / back nav) ──
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await getToken();
+        const res = await api.get('/sessions/pre-documents', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const docs = (res.data?.documents ?? []) as Array<{ docType: DocType; cloudUrl: string }>;
+        if (cancelled) return;
+        setSlots(prev => prev.map(s => {
+          const doc = docs.find(d => d.docType === s.type);
+          return doc && s.status === 'idle' ? { ...s, status: 'done', cloudUrl: doc.cloudUrl } : s;
+        }));
+      } catch {
+        // non-fatal — the user can simply upload again
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [getToken]);
 
   // ── File selection / validation ───────────────────────────────────────────
   const handleFile = useCallback(async (type: DocType, file: File) => {
@@ -143,17 +165,14 @@ export default function DocumentUpload() {
     setDragOver(type);
   };
 
-  // ── Navigation ────────────────────────────────────────────────────────────
-  const handleContinue = () => {
-    router.push('/onboard/consent');
-  };
-
-  const handleSkip = () => {
-    router.push('/onboard/consent');
-  };
-
+  // ── Navigation — a PAN or Aadhaar card (at least one) is mandatory ───────
   const hasAnyUploaded = slots.some(s => s.status === 'done');
   const anyUploading   = slots.some(s => s.status === 'uploading');
+  const canContinue    = hasAnyUploaded && !anyUploading;
+
+  const handleContinue = () => {
+    if (canContinue) router.push('/onboard/consent');
+  };
 
   return (
     <div className="flex-col flex-center animate-fade-in-up" style={{ width: '100%', maxWidth: '700px', margin: '0 auto' }}>
@@ -164,18 +183,22 @@ export default function DocumentUpload() {
         </h2>
         <p style={{ color: 'var(--color-text-secondary)', lineHeight: 1.6 }}>
           {isHi
-            ? 'आगे बढ़ने के लिए अपने KYC दस्तावेज़ अपलोड करें। यह चरण वैकल्पिक है — आप इसे छोड़ भी सकते हैं।'
-            : 'Upload your KYC documents for faster verification. This step is optional — you can skip it and provide them verbally during the call.'}
+            ? 'आगे बढ़ने के लिए अपना PAN कार्ड या आधार कार्ड अपलोड करें। इनमें से कम से कम एक ज़रूरी है।'
+            : 'Upload your PAN card or Aadhaar card to continue. At least one is required — uploading both speeds up verification.'}
         </p>
 
-        {/* Optional badge */}
+        {/* Requirement badge */}
         <span style={{
           display: 'inline-block', marginTop: '0.75rem',
           padding: '4px 14px', borderRadius: '99px',
-          background: 'rgba(59,130,246,0.12)', border: '1px solid rgba(59,130,246,0.3)',
-          color: 'var(--color-accent-blue)', fontSize: '0.8rem', fontWeight: 600, letterSpacing: '0.04em',
+          background: hasAnyUploaded ? 'rgba(34,197,94,0.12)' : 'rgba(245,158,11,0.12)',
+          border: `1px solid ${hasAnyUploaded ? 'rgba(34,197,94,0.35)' : 'rgba(245,158,11,0.35)'}`,
+          color: hasAnyUploaded ? 'var(--color-success)' : '#F59E0B',
+          fontSize: '0.8rem', fontWeight: 600, letterSpacing: '0.04em',
         }}>
-          OPTIONAL
+          {hasAnyUploaded
+            ? (isHi ? '✓ आवश्यकता पूरी' : '✓ REQUIREMENT MET')
+            : (isHi ? 'आवश्यक · कोई एक' : 'REQUIRED · ANY ONE')}
         </span>
       </div>
 
@@ -221,25 +244,13 @@ export default function DocumentUpload() {
       {/* Action buttons */}
       <div style={{ display: 'flex', gap: '1rem', width: '100%', maxWidth: '400px' }}>
         <button
-          onClick={handleSkip}
-          className="btn-secondary"
-          style={{
-            flex: 1, padding: '0.875rem', borderRadius: '10px',
-            background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)',
-            color: 'rgba(255,255,255,0.7)', fontWeight: 600, cursor: 'pointer',
-            transition: 'all 0.2s',
-          }}
-        >
-          {isHi ? 'छोड़ें →' : 'Skip →'}
-        </button>
-        <button
           onClick={handleContinue}
-          disabled={anyUploading}
+          disabled={!canContinue}
           className="btn-primary"
           style={{
-            flex: 2, padding: '0.875rem', borderRadius: '10px',
-            opacity: anyUploading ? 0.5 : 1,
-            cursor: anyUploading ? 'not-allowed' : 'pointer',
+            flex: 1, padding: '0.875rem', borderRadius: '10px',
+            opacity: canContinue ? 1 : 0.5,
+            cursor: canContinue ? 'pointer' : 'not-allowed',
             fontSize: '1rem', fontWeight: 600,
           }}
         >
@@ -247,7 +258,7 @@ export default function DocumentUpload() {
             ? (isHi ? 'अपलोड हो रहा है...' : 'Uploading...')
             : hasAnyUploaded
               ? (isHi ? 'जारी रखें ➔' : 'Continue ➔')
-              : (isHi ? 'छोड़ें और जारी रखें ➔' : 'Skip & Continue ➔')}
+              : (isHi ? 'PAN या आधार अपलोड करें' : 'Upload PAN or Aadhaar to continue')}
         </button>
       </div>
 

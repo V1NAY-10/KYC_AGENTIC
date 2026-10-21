@@ -90,6 +90,7 @@ Be specific and factual. Reference actual field values where relevant. Do NOT fa
       systemPrompt,
       userMessage: 'Generate the interview intelligence report now.',
       json: true,
+      lane: 'secondary',
     });
 
     return {

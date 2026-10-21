@@ -2,18 +2,24 @@
 
 import { useEffect, useRef } from 'react';
 import { useAuth, useClerk } from '@clerk/nextjs';
-import { useRouter } from 'next/navigation';
+import { useRouter, usePathname } from 'next/navigation';
 
 const TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes of inactivity
+
+// The video interview is voice-only — no mouse/keyboard events fire while the
+// applicant talks, so the inactivity logout must not run there.
+const VOICE_ONLY_PATHS = ['/onboard/call'];
 
 export default function SessionTimeout({ children }: { children: React.ReactNode }) {
   const { isSignedIn } = useAuth();
   const { signOut } = useClerk();
   const router = useRouter();
+  const pathname = usePathname();
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
-    if (!isSignedIn) {
+    const onVoicePage = VOICE_ONLY_PATHS.some(p => pathname?.startsWith(p));
+    if (!isSignedIn || onVoicePage) {
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
       return;
     }
@@ -39,7 +45,7 @@ export default function SessionTimeout({ children }: { children: React.ReactNode
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
       events.forEach((event) => window.removeEventListener(event, resetTimer));
     };
-  }, [isSignedIn, signOut, router]);
+  }, [isSignedIn, signOut, router, pathname]);
 
   return <>{children}</>;
 }

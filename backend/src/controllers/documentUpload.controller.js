@@ -9,7 +9,8 @@ import { getRedis } from '../config/redis.js';
  * POST /sessions/upload-document
  *
  * Accepts a single file (multipart/form-data, field name: "document")
- * and optional fields: docType ('pan' | 'aadhaar'), sessionId.
+ * and fields: docType ('pan' | 'aadhaar', required), sessionId (optional).
+ * At least one of PAN / Aadhaar must be uploaded before a session can start.
  *
  * Flow:
  *   BEFORE session (pre-consent upload):
@@ -32,7 +33,20 @@ const upload = multer({
   },
 });
 
-export const uploadMiddleware = upload.single('document');
+// Translate multer failures (size / type) into 4xx JSON instead of a generic 500
+export const uploadMiddleware = (req, res, next) => {
+  upload.single('document')(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ error: 'File too large. Maximum size is 5MB.' });
+    }
+    return res.status(400).json({ error: err.message || 'Invalid upload.' });
+  });
+};
+
+const ALLOWED_DOC_TYPES = ['pan', 'aadhaar'];
+// Verbal answer each document type can be cross-checked against
+const VERBAL_FIELD = { pan: 'panNumber', aadhaar: 'aadhaarNumber' };
 
 // ── Upload handler ────────────────────────────────────────────────────────────
 export async function uploadDocument(req, res) {
@@ -41,9 +55,13 @@ export async function uploadDocument(req, res) {
       return res.status(400).json({ error: 'No file received. Ensure field name is "document".' });
     }
 
-    const docType   = req.body?.docType  || 'unknown';
+    const docType   = req.body?.docType;
     const sessionId = req.body?.sessionId || null;
     const { userId } = getAuth(req);
+
+    if (!ALLOWED_DOC_TYPES.includes(docType)) {
+      return res.status(400).json({ error: 'docType must be "pan" or "aadhaar".' });
+    }
 
     // Upload to Cloudinary
     const folder       = `kyc-documents/${userId}`;
@@ -71,17 +89,14 @@ export async function uploadDocument(req, res) {
       const session = await Session.findById(sessionId);
 
       if (session && session.clerkId === userId) {
-        // Cross-verify PAN if it's a PAN card upload
-        if (docType === 'pan' && session.collectedAnswers?.get('pan')) {
-          const verbalPAN = String(session.collectedAnswers.get('pan')).toUpperCase().trim();
-          // Simple heuristic: check if verbal PAN is in the filename (user often names files with their PAN)
-          const nameMatch = req.file.originalname.toUpperCase().includes(verbalPAN);
-          docRecord.verified         = nameMatch;
-          docRecord.verificationNote = nameMatch
-            ? `PAN ${verbalPAN} appears consistent with document`
-            : `Manual verification required — PAN could not be auto-matched`;
-        }
+        // Note which verbal ID this document must be checked against (no OCR yet → officer verifies)
+        const verbal = session.collectedAnswers?.get(VERBAL_FIELD[docType]);
+        docRecord.verificationNote = verbal
+          ? `Manual verification required — compare document with stated ${docType.toUpperCase()} ${verbal}`
+          : 'Manual verification required';
 
+        // Replace an earlier upload of the same type rather than stacking duplicates
+        await Session.findByIdAndUpdate(sessionId, { $pull: { documents: { docType } } });
         await Session.findByIdAndUpdate(sessionId, {
           $push: { documents: docRecord },
         });
@@ -111,9 +126,6 @@ export async function uploadDocument(req, res) {
 
   } catch (err) {
     console.error('[uploadDocument] Error:', err.message);
-    if (err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(413).json({ error: 'File too large. Maximum size is 5MB.' });
-    }
-    return res.status(500).json({ error: err.message || 'Document upload failed. Please try again.' });
+    return res.status(500).json({ error: 'Document upload failed. Please try again.' });
   }
 }

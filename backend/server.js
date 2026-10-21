@@ -22,6 +22,11 @@ import authRoutes from './src/routes/auth.routes.js';
 const app = express();
 const httpServer = createServer(app);
 
+// Render / Vercel sit behind one proxy hop — without this every user shares the
+// proxy's IP, so the rate limiter throttles everyone together and consent/geo
+// records log the proxy instead of the applicant.
+app.set('trust proxy', 1);
+
 // ─── Allowed Origins (supports comma-separated list in CLIENT_URL) ────────────
 // e.g. CLIENT_URL=https://your-app.vercel.app,http://localhost:3000
 const allowedOrigins = (process.env.CLIENT_URL || 'http://localhost:3000')
@@ -45,6 +50,7 @@ const corsOptions = {
 const io = new Server(httpServer, {
   cors: corsOptions,
   transports: ['websocket', 'polling'], // polling as fallback for Render proxy
+  maxHttpBufferSize: 5 * 1024 * 1024,   // audio answers arrive as one binary message
 });
 registerSocketHandlers(io);
 

@@ -39,6 +39,11 @@ const SessionSchema = new mongoose.Schema({
   transcript:       [TranscriptEntrySchema],
   extractedAnswers: [mongoose.Schema.Types.Mixed],
   collectedAnswers: { type: Map, of: mongoose.Schema.Types.Mixed, default: {} },
+  // Mirrors working memory every turn so a Redis loss never restarts the interview
+  collectedConfidence: { type: Map, of: Number, default: {} },
+  // Fields the agent stopped asking for after max attempts — officer must verify
+  skippedFields:      [{ field: String, reason: String, _id: false }],
+  complianceWarnings: [mongoose.Schema.Types.Mixed],
   fraudSignals:     [FraudSignalSchema],
 
   // Uploaded KYC documents (linked from pre-consent upload or review page)

@@ -3,44 +3,59 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import io, { Socket } from 'socket.io-client';
+import { useAuth } from '@clerk/nextjs';
 import { useAppStore } from '@/store/useAppStore';
 import { useSpeechRecognition } from '@/hooks/useSpeechRecognition';
 import { useSpeechSynthesis } from '@/hooks/useSpeechSynthesis';
 import { WebcamFeed } from '@/components/WebcamFeed';
 import { WaveformVisualizer } from '@/components/WaveformVisualizer';
 
-const SILENCE_TIMEOUT_MS = 7000;
-
+// Keys match the backend's required fields (govtId = PAN or Aadhaar)
 const CALL_STEPS = [
-  { key: 'IDENTITY_NAME',          label: 'Full Name',       icon: '👤' },
-  { key: 'IDENTITY_DOB',           label: 'Date of Birth',   icon: '📅' },
-  { key: 'IDENTITY_ADDRESS',       label: 'Address',         icon: '📍' },
-  { key: 'IDENTITY_PAN',           label: 'PAN Number',      icon: '🪪' },
-  { key: 'FINANCIAL_INCOME',       label: 'Monthly Income',  icon: '💰' },
-  { key: 'FINANCIAL_EMPLOYER',     label: 'Employer',        icon: '🏢' },
-  { key: 'FINANCIAL_TENURE',       label: 'Employment Years',icon: '📆' },
-  { key: 'FINANCIAL_EXISTING_EMI', label: 'Existing EMI',    icon: '📊' },
-  { key: 'LOAN_AMOUNT',            label: 'Loan Amount',     icon: '🏦' },
-  { key: 'LOAN_PURPOSE',           label: 'Loan Purpose',    icon: '🎯' },
-  { key: 'LOAN_TENURE',            label: 'Loan Duration',   icon: '⏱' },
+  { key: 'fullName',        label: 'Full Name',        icon: '👤' },
+  { key: 'dateOfBirth',     label: 'Date of Birth',    icon: '📅' },
+  { key: 'currentAddress',  label: 'Address',          icon: '📍' },
+  { key: 'govtId',          label: 'PAN / Aadhaar',    icon: '🪪' },
+  { key: 'monthlyIncome',   label: 'Monthly Income',   icon: '💰' },
+  { key: 'employerName',    label: 'Employer',         icon: '🏢' },
+  { key: 'employmentYears', label: 'Employment Years', icon: '📆' },
+  { key: 'existingEMI',     label: 'Existing EMI',     icon: '📊' },
+  { key: 'loanAmount',      label: 'Loan Amount',      icon: '🏦' },
+  { key: 'loanPurpose',     label: 'Loan Purpose',     icon: '🎯' },
+  { key: 'loanTenure',      label: 'Loan Duration',    icon: '⏱' },
 ];
+
+// Fallback if the closing line's speech never reports it finished
+const COMPLETE_NAV_FALLBACK_MS = 15000;
+
+interface CallProgress {
+  completed: number;
+  total: number;
+  missing: string[];
+}
 
 interface AgentResponseData {
   question: string;
   state: string;
   stateLabel?: string;
   isReprompt?: boolean;
+  currentField?: string | null;
+  progress?: CallProgress;
   fraudSignals?: { severity: string }[];
 }
 
 interface CallCompleteData {
   sessionId: string;
   extractedFields: unknown[];
+  alreadyCompleted?: boolean;
 }
 
 export default function CallPage() {
   const router = useRouter();
   const { sessionId, language } = useAppStore();
+  const { getToken } = useAuth();
+  const getTokenRef = useRef(getToken);
+  useEffect(() => { getTokenRef.current = getToken; }, [getToken]);
 
   const [socket, setSocket] = useState<Socket | null>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -50,38 +65,37 @@ export default function CallPage() {
   const [callStatus, setCallStatus] = useState<'connecting' | 'active' | 'processing' | 'complete'>('connecting');
   const [isReprompt, setIsReprompt] = useState(false);
   const [fraudWarning, setFraudWarning] = useState<string | null>(null);
+  const [currentField, setCurrentField] = useState<string | null>(null);
+  const [progress, setProgress] = useState<CallProgress | null>(null);
 
-  const { isListening, transcript, startListening, stopListening, resetTranscript, setTranscript } =
+  const socketRef = useRef<Socket | null>(null);
+  const completeRef = useRef(false);
+  const navTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const { isListening, transcript, startListening, stopListening, cancelListening, resetTranscript, setTranscript } =
     useSpeechRecognition({
       stream,
-      onAudioReady: (blob) => {
+      onAudioReady: (blob, mimeType) => {
         const s = socketRef.current;
         if (s && sessionId) {
           setCallStatus('processing');
           setFraudWarning(null);
-          s.emit('call:audio', { audio: blob, sessionId });
+          s.emit('call:audio', { audio: blob, mimeType, sessionId });
         }
-      }
+      },
+      // Nobody spoke — ask the backend to re-prompt instead of uploading silence
+      onNoSpeech: () => {
+        const s = socketRef.current;
+        if (s && sessionId && !completeRef.current) s.emit('call:silence', { sessionId });
+      },
     });
   const { speak, stop: stopSpeaking, isSpeaking } = useSpeechSynthesis();
 
-  const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const socketRef = useRef<Socket | null>(null);
-
-  const clearSilenceTimer = useCallback(() => {
-    if (silenceTimerRef.current) {
-      clearTimeout(silenceTimerRef.current);
-      silenceTimerRef.current = null;
-    }
-  }, []);
-
-  const startSilenceTimer = useCallback(() => {
-    clearSilenceTimer();
-    startListening();
-    silenceTimerRef.current = setTimeout(() => {
-      stopListening();
-    }, SILENCE_TIMEOUT_MS);
-  }, [clearSilenceTimer, startListening, stopListening]);
+  const goToReview = useCallback(() => {
+    if (navTimerRef.current) clearTimeout(navTimerRef.current);
+    navTimerRef.current = null;
+    router.push('/onboard/review');
+  }, [router]);
 
   useEffect(() => {
     if (!sessionId) { router.push('/onboard/setup'); return; }
@@ -95,8 +109,12 @@ export default function CallPage() {
     const newSocket = io(SOCKET_URL, {
       withCredentials: true,
       transports: ['websocket', 'polling'],   // polling fallback for Render proxy
-      reconnectionAttempts: 5,
+      reconnectionAttempts: 10,
       reconnectionDelay: 1500,
+      // Fresh Clerk token on every (re)connect — tokens are short-lived
+      auth: (cb) => {
+        getTokenRef.current().then(token => cb({ token }), () => cb({ token: null }));
+      },
     });
     socketRef.current = newSocket;
 
@@ -105,55 +123,71 @@ export default function CallPage() {
       newSocket.emit('call:join', { sessionId, language });
     });
 
+    newSocket.on('connect_error', (err: Error) => {
+      if (err.message === 'unauthorized') {
+        setAgentText('Your sign-in has expired. Please refresh the page to continue the interview.');
+      }
+    });
+
     newSocket.on('call:agent-response', (data: AgentResponseData) => {
-      clearSilenceTimer();
       setAgentText(data.question);
       setCurrentState(data.state);
       setCurrentStateLabel(data.stateLabel || data.state);
       setIsReprompt(data.isReprompt || false);
-      setCallStatus('active');
+      if (data.currentField !== undefined) setCurrentField(data.currentField);
+      if (data.progress) setProgress(data.progress);
+      setCallStatus(data.state === 'CALL_COMPLETE' ? 'complete' : 'active');
       if (data.fraudSignals && data.fraudSignals.length > 0) {
         const highSeverity = data.fraudSignals.find(s => s.severity === 'high');
         if (highSeverity) setFraudWarning('Inconsistency detected — please answer clearly.');
       }
-      stopListening();
+      cancelListening();
       resetTranscript();
       speak(data.question, language === 'hi' ? 'hi-IN' : 'en-US', () => {
-        if (data.state !== 'CALL_COMPLETE') startSilenceTimer();
+        // Let Aria finish her closing line before leaving the call
+        if (completeRef.current) goToReview();
+        else if (data.state !== 'CALL_COMPLETE') startListening();
       });
     });
 
     newSocket.on('call:complete', (data: CallCompleteData) => {
+      completeRef.current = true;
       setCallStatus('complete');
-      clearSilenceTimer();
-      stopListening();
+      cancelListening();
       sessionStorage.setItem('kycReviewData', JSON.stringify(data));
-      setTimeout(() => router.push('/onboard/review'), 1500);
+      if (data.alreadyCompleted) { goToReview(); return; }
+      // Normally we navigate when the closing line ends; this covers browsers whose speech never ends.
+      if (!navTimerRef.current) {
+        navTimerRef.current = setTimeout(goToReview, COMPLETE_NAV_FALLBACK_MS);
+      }
     });
 
     newSocket.on('call:user-transcript', (data: { text: string }) => {
       setTranscript(data.text);
     });
 
-    newSocket.on('call:error', (data: { message: string }) => {
-      setAgentText(`Error: ${data.message}`);
+    newSocket.on('call:error', (data: { message: string; retry?: boolean }) => {
+      setAgentText(data.message);
       setCallStatus('active');
+      // Transient failure (e.g. speech service hiccup) — let them answer again
+      if (data.retry && !completeRef.current) startListening();
     });
 
     setSocket(newSocket);
 
     return () => {
-      clearSilenceTimer();
+      if (navTimerRef.current) clearTimeout(navTimerRef.current);
+      navTimerRef.current = null;
       newSocket.disconnect();
       socketRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, language, router]);
 
-  const currentStepIndex = CALL_STEPS.findIndex(s => s.key === currentState);
-  const progressPercent = currentStepIndex < 0
-    ? 0
-    : Math.round(((currentStepIndex + 1) / CALL_STEPS.length) * 100);
+  const currentStepIndex = CALL_STEPS.findIndex(s => s.key === currentField);
+  const progressPercent = callStatus === 'complete'
+    ? 100
+    : progress ? Math.round((progress.completed / progress.total) * 100) : 0;
 
   /* ── Status helpers ── */
   const statusLabel =
@@ -402,7 +436,7 @@ export default function CallPage() {
             {/* Done speaking button */}
             {isListening && (
               <button
-                onClick={() => { clearSilenceTimer(); stopListening(); }}
+                onClick={() => { stopListening(); }}
                 style={{
                   marginTop: '0.625rem',
                   width: '100%', padding: '8px',
@@ -436,9 +470,10 @@ export default function CallPage() {
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
               {CALL_STEPS.map((step, idx) => {
-                const done   = currentStepIndex > idx;
-                const active = currentStepIndex === idx;
-                const future = currentStepIndex < idx;
+                // Answers can arrive out of order (volunteered info), so "done" comes from the backend
+                const done   = callStatus === 'complete' || (progress ? !progress.missing.includes(step.key) : false);
+                const active = !done && currentStepIndex === idx;
+                const future = !done && !active;
                 return (
                   <div key={step.key} style={{
                     display: 'flex', alignItems: 'center', gap: '0.625rem',
@@ -513,9 +548,8 @@ export default function CallPage() {
               (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(239,68,68,0.35)';
             }}
             onClick={() => {
-              clearSilenceTimer();
               stopSpeaking();
-              stopListening();
+              cancelListening();
               if (socket) socket.disconnect();
               router.push('/onboard/setup');
             }}

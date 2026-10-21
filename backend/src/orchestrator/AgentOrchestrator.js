@@ -2,6 +2,7 @@ import { ToolRegistry } from '../tools/ToolRegistry.js';
 import { whisperTool }       from '../tools/whisper.tool.js';
 import { geoLookupTool }     from '../tools/geoLookup.tool.js';
 import { panValidationTool } from '../tools/panValidation.tool.js';
+import { aadhaarValidationTool } from '../tools/aadhaarValidation.tool.js';
 import { emiCalculatorTool } from '../tools/emiCalculator.tool.js';
 import { fraudScorerTool }   from '../tools/fraudScorer.tool.js';
 import { ocrTool }           from '../tools/ocr.tool.js';
@@ -30,6 +31,7 @@ export function setupAgentOrchestrator() {
   ToolRegistry.register(whisperTool);
   ToolRegistry.register(geoLookupTool);
   ToolRegistry.register(panValidationTool);
+  ToolRegistry.register(aadhaarValidationTool);
   ToolRegistry.register(emiCalculatorTool);
   ToolRegistry.register(fraudScorerTool);
   ToolRegistry.register(ocrTool);
